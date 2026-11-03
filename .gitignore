@@ -1,0 +1,26 @@
+# Gradle / Android
+.gradle/
+.gradle-home/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 产物（走 Releases，不进仓库）
+dist/
+*.apk
+*.aab
+
+# 签名材料
+*.jks
+*.keystore
+
+# macOS
+.DS_Store
+
+# Kotlin 增量编译日志
+.kotlin/
