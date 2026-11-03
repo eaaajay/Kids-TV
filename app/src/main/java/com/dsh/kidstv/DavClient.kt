@@ -57,7 +57,9 @@ class DavClient(private val cfg: NasConfig) {
 
     private fun parseMultiStatus(xml: String, self: String): List<DavEntry> {
         val parser = Xml.newPullParser()
-        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+        // 必须开命名空间：真实服务器（群晖 / Alist / 极空间…）返回的都是 <D:href>。
+        // 关掉命名空间时 getName() 会给出 "D:href"，跟 "href" 永远对不上。
+        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
         parser.setInput(StringReader(xml))
 
         var event = parser.eventType
@@ -68,26 +70,23 @@ class DavClient(private val cfg: NasConfig) {
 
         while (event != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
-                when (parser.name.lowercase()) {
+                when (parser.name) {
                     "response" -> {
                         href = null; isDir = false; size = 0L
                     }
+                    // 文本要在 START_TAG 上取：END_TAG 事件里 getText() 返回 null
+                    "href" -> href = runCatching { parser.nextText() }.getOrNull()?.trim()
                     "collection" -> isDir = true
                     "getcontentlength" -> {
                         val v = runCatching { parser.nextText() }.getOrDefault("")
                         size = v.trim().toLongOrNull() ?: 0L
                     }
                 }
-            } else if (event == XmlPullParser.END_TAG) {
-                when (parser.name.lowercase()) {
-                    "href" -> href = parser.text
-                    "response" -> {
-                        val raw = href?.trim()
-                        if (!raw.isNullOrEmpty()) {
-                            val entry = makeEntry(raw, isDir, size)
-                            if (entry != null && normalize(entry.href) != normalize(self)) out.add(entry)
-                        }
-                    }
+            } else if (event == XmlPullParser.END_TAG && parser.name == "response") {
+                val raw = href
+                if (!raw.isNullOrEmpty()) {
+                    val entry = makeEntry(raw, isDir, size)
+                    if (entry != null && normalize(entry.href) != normalize(self)) out.add(entry)
                 }
             }
             event = parser.next()

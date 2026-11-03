@@ -24,3 +24,6 @@ dist/
 
 # Kotlin 增量编译日志
 .kotlin/
+.gradle-home/
+.adbhome/
+.debug.keystore

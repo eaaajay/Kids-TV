@@ -6,7 +6,6 @@ import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.SystemClock
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -16,7 +15,6 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
-import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.CoroutineScope
@@ -35,7 +33,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 绘本阅读器：把 NAS 上的 PDF 下载到本地缓存，用系统自带的 PdfRenderer 一页页画出来。
- * ← → 翻页，长按返回键退出（跟播放页一样，孩子按一下出不去）。
+ * ← → 翻页，返回键直接退出。
  */
 class BookActivity : Activity() {
 
@@ -49,7 +47,6 @@ class BookActivity : Activity() {
     private var pfd: ParcelFileDescriptor? = null
     private var pageCount = 0
     private var page = 0
-    private var backAt = 0L
     private var renderJob: Job? = null
     private var lastBitmap: Bitmap? = null
 
@@ -249,19 +246,6 @@ class BookActivity : Activity() {
                     if (page > 0) showPage(page - 1)
                     return true
                 }
-            }
-            KeyEvent.KEYCODE_BACK -> {
-                when (event.action) {
-                    KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) backAt = SystemClock.uptimeMillis()
-                    KeyEvent.ACTION_UP -> {
-                        val held = SystemClock.uptimeMillis() - backAt
-                        backAt = 0
-                        if (held >= 2000) finish()
-                        else Toast.makeText(this, "长按返回键 2 秒退出", Toast.LENGTH_SHORT).show()
-                        return true
-                    }
-                }
-                return true
             }
         }
         return super.dispatchKeyEvent(event)

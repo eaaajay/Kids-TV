@@ -1,8 +1,7 @@
 package com.dsh.kidstv
 
 import android.content.Context
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -76,28 +75,47 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
     private fun handle(socket: Socket) {
         socket.use { s ->
             s.soTimeout = 15000
-            val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
-            val requestLine = reader.readLine() ?: return
+            val input = s.getInputStream()
+
+            // 头按字节读到空行。不能用 BufferedReader：它会把 body 一起吞进缓冲区，
+            // 后面再按字节读就会少数据。
+            fun readLine(): String? {
+                val buf = ByteArrayOutputStream()
+                while (true) {
+                    val b = input.read()
+                    if (b == -1) return if (buf.size() == 0) null else buf.toString("UTF-8")
+                    if (b == '\n'.code) break
+                    if (b != '\r'.code) buf.write(b)
+                    if (buf.size() > 8192) break
+                }
+                return buf.toString("UTF-8")
+            }
+
+            val requestLine = readLine() ?: return
             val parts = requestLine.split(" ")
             if (parts.size < 2) return
             val path = parts[1].substringBefore('?')
 
             var contentLength = 0
             while (true) {
-                val line = reader.readLine() ?: break
+                val line = readLine() ?: break
                 if (line.isEmpty()) break
                 if (line.startsWith("Content-Length:", ignoreCase = true)) {
                     contentLength = line.substringAfter(':').trim().toIntOrNull() ?: 0
                 }
             }
-            val chars = CharArray(contentLength.coerceIn(0, 64 * 1024))
-            var read = 0
-            while (read < chars.size) {
-                val n = reader.read(chars, read, chars.size - read)
-                if (n <= 0) break
-                read += n
+            // Content-Length 是字节数，必须按字节读完再 UTF-8 解码。
+            // 以前按字符数读：路径里有中文（/视频资源/儿童视频）时会一直等到超时。
+            val body = if (contentLength <= 0) "" else {
+                val bytes = ByteArray(contentLength.coerceAtMost(256 * 1024))
+                var read = 0
+                while (read < bytes.size) {
+                    val n = input.read(bytes, read, bytes.size - read)
+                    if (n <= 0) break
+                    read += n
+                }
+                bytes.copyOf(read).toString(Charsets.UTF_8)
             }
-            val body = String(chars, 0, read)
 
             when (path) {
                 "/", "/index.html" -> respond(s, 200, "OK", "text/html; charset=utf-8", pageHtml(Prefs.load(ctx)))
@@ -121,7 +139,12 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
             val entries = dav.propfind(DavClient.encodePath(cfg.rootPath), 1)
             val dirs = entries.count { it.isDir }
             val vids = entries.count { !it.isDir && Library.isVideo(it.name) }
-            "连接成功：$dirs 个文件夹，$vids 个视频"
+            // 大部分人是「根目录只放文件夹，视频在子文件夹里」，这时报 0 个视频会吓到人
+            when {
+                vids == 0 && dirs > 0 -> "连接成功：$dirs 个文件夹（视频都在子文件夹里，电视上会一行一个）"
+                dirs == 0 && vids == 0 -> "连接成功，但这个路径下没找到视频：${cfg.rootPath}"
+                else -> "连接成功：$dirs 个文件夹，$vids 个视频"
+            }
         } catch (e: Exception) {
             "连接失败：" + (e.message ?: "未知错误")
         }
@@ -185,7 +208,7 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>小芽英语 · 家长设置</title>
+<title>夏夏看电视 · 家长设置</title>
 <style>
   :root{--paper:#F7EDDC;--ink:#17324D;--ink2:#5B7186;--coral:#E85C43;--line:#E2D2B4;--card:#FFFBF4}
   *{box-sizing:border-box}
@@ -209,7 +232,7 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
   .note{font-size:12.5px;color:var(--ink2);line-height:1.7;margin:18px 4px 0}
 </style></head>
 <body>
-<h1>小芽英语</h1>
+<h1>夏夏看电视</h1>
 <p class="lead">把 NAS 上的儿童英语视频接上电视。<br>
 支持 WebDAV：群晖、威联通、极空间、绿联、Alist 都行。</p>
 

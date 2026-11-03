@@ -6,7 +6,6 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -39,7 +38,6 @@ class PlayerActivity : Activity() {
     private var urls = ArrayList<String>()
     private var titles = ArrayList<String>()
     private var startIndex = 0
-    private var backAt = 0L
     private val ui = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -94,7 +92,7 @@ class PlayerActivity : Activity() {
             FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.TOP or Gravity.START)
         )
 
-        val hint = label("长按返回键 2 秒退出", 14, 0x88FFF7ED.toInt()).apply {
+        val hint = label("按返回键退出", 14, 0x88FFF7ED.toInt()).apply {
             setPadding(dp(40), 0, dp(48), dp(34))
         }
         root.addView(hint, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.BOTTOM or Gravity.END))
@@ -178,22 +176,11 @@ class PlayerActivity : Activity() {
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // 按任意键把标题叫回来；返回键直接退出（不再要求长按）
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
             event.keyCode != KeyEvent.KEYCODE_BACK
         ) {
             showTitle()
-        }
-        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-            when (event.action) {
-                KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) backAt = SystemClock.uptimeMillis()
-                KeyEvent.ACTION_UP -> {
-                    val held = SystemClock.uptimeMillis() - backAt
-                    backAt = 0
-                    if (held >= 2000) finish() else toast("长按返回键 2 秒退出")
-                    return true
-                }
-            }
-            return true
         }
         return super.dispatchKeyEvent(event)
     }
