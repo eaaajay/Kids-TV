@@ -27,3 +27,5 @@ dist/
 .gradle-home/
 .adbhome/
 .debug.keystore
+.gh/
+.ssh/
