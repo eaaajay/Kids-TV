@@ -147,7 +147,8 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
             rootPath = root.ifBlank { "/" },
             user = (map["user"] ?: "").trim(),
             pass = (map["pass"] ?: "").trim(),
-            title = (map["title"] ?: "").trim().ifBlank { "英语时间" }
+            title = (map["title"] ?: "").trim().ifBlank { "英语时间" },
+            booksPath = (map["books"] ?: "").trim().let { if (it.isBlank()) "" else if (it.startsWith("/")) it else "/$it" }
         )
     }
 
@@ -228,6 +229,9 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
       <div><label>密码</label>
         <input name="pass" type="password" value="${esc(cfg.pass)}"></div>
     </div>
+    <label>绘本目录（放 PDF 的文件夹，留空就和视频同目录）</label>
+    <input name="books" placeholder="/books/绘本" value="${esc(cfg.booksPath)}">
+
     <label>桌面标题（孩子看到的名字）</label>
     <input name="title" placeholder="英语时间" value="${esc(cfg.title)}">
   </div>

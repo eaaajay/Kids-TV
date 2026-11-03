@@ -26,6 +26,11 @@ object Palette {
     fun cover(i: Int): Int = covers[Math.floorMod(i, covers.size)]
 }
 
+/** 关掉系统默认的焦点高亮框，不然会和自绘描边叠成双层 */
+fun View.noDefaultFocusRing() {
+    if (android.os.Build.VERSION.SDK_INT >= 26) defaultFocusHighlightEnabled = false
+}
+
 fun Context.dp(v: Number): Int = (v.toFloat() * resources.displayMetrics.density + 0.5f).toInt()
 
 fun Context.sp(v: Number): Float = TypedValue.applyDimension(

@@ -9,9 +9,12 @@ data class NasConfig(
     val rootPath: String = "/",
     val user: String = "",
     val pass: String = "",
-    val title: String = "英语时间"
+    val title: String = "英语时间",
+    /** 绘本目录；留空就跟视频用同一个根目录 */
+    val booksPath: String = ""
 ) {
     val ready: Boolean get() = host.isNotBlank()
+    val booksRoot: String get() = booksPath.ifBlank { rootPath }
     val base: String get() = "$scheme://$host:$port"
     val cacheKey: String get() = "$scheme://$host:$port$rootPath"
 }
@@ -30,7 +33,8 @@ object Prefs {
             rootPath = s.getString("root", "/") ?: "/",
             user = s.getString("user", "") ?: "",
             pass = s.getString("pass", "") ?: "",
-            title = s.getString("title", "英语时间") ?: "英语时间"
+            title = s.getString("title", "英语时间") ?: "英语时间",
+            booksPath = s.getString("books", "") ?: ""
         )
     }
 
@@ -43,6 +47,7 @@ object Prefs {
             .putString("user", cfg.user)
             .putString("pass", cfg.pass)
             .putString("title", cfg.title)
+            .putString("books", cfg.booksPath)
             .apply()
     }
 

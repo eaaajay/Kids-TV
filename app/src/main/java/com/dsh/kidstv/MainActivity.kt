@@ -50,8 +50,11 @@ class MainActivity : Activity() {
 
     private lateinit var tabWatch: TextView
     private lateinit var tabAll: TextView
+    private lateinit var tabBooks: TextView
     private lateinit var pageWatch: View
     private lateinit var pageAll: View
+    private lateinit var pageBooks: View
+    private lateinit var booksHost: LinearLayout
     private lateinit var watchList: LinearLayout
     private lateinit var allHost: LinearLayout
     private lateinit var previewTitle: TextView
@@ -60,6 +63,8 @@ class MainActivity : Activity() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var sections: List<Section> = emptyList()
+    private var books: List<Book> = emptyList()
+    private var booksLoaded = false
     private var shuffled: List<Video> = emptyList()
     private var tab = 0
     private var backAt = 0L
@@ -97,6 +102,8 @@ class MainActivity : Activity() {
         val now = Prefs.load(this)
         if (now.ready && now.cacheKey != cfg.cacheKey) {
             cfg = now
+            booksLoaded = false
+            books = emptyList()
             showCached()
             refresh()
         }
@@ -145,9 +152,12 @@ class MainActivity : Activity() {
 
         pageWatch = buildWatchPage()
         pageAll = buildAllPage()
+        pageBooks = buildBooksPage()
         content.addView(pageWatch, MATCH_PARENT, MATCH_PARENT)
         content.addView(pageAll, MATCH_PARENT, MATCH_PARENT)
+        content.addView(pageBooks, MATCH_PARENT, MATCH_PARENT)
         pageAll.visibility = View.GONE
+        pageBooks.visibility = View.GONE
 
         paintTabs()
         return root
@@ -162,7 +172,10 @@ class MainActivity : Activity() {
 
         val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         brand.addView(label("小芽英语", if (compact) 16 else 21, Palette.ink, display = true))
-        subtitle = label("", if (compact) 10 else 12, Palette.ink3)
+        subtitle = label("", if (compact) 10 else 12, Palette.ink3).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
         subtitle.setPadding(0, dp(2), 0, 0)
         brand.addView(subtitle)
         row.addView(brand, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -173,8 +186,10 @@ class MainActivity : Activity() {
         }
         tabWatch = tabPill("随心看", 0)
         tabAll = tabPill("全部目录", 1)
+        tabBooks = tabPill("绘本", 2)
         tabs.addView(tabWatch)
         tabs.addView(tabAll)
+        tabs.addView(tabBooks)
         row.addView(tabs)
 
         val parent = label("家长", if (compact) 11 else 13, Palette.ink2).apply {
@@ -184,8 +199,8 @@ class MainActivity : Activity() {
             )
             background = shape(Palette.card, dp(30).toFloat(), dp(1), Palette.paper2)
             isFocusable = true
-            isFocusableInTouchMode = true
             isClickable = true
+            noDefaultFocusRing()
             setOnClickListener { askPin() }
         }
         val lp = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
@@ -202,8 +217,8 @@ class MainActivity : Activity() {
             )
             background = shape(Color.TRANSPARENT, dp(24).toFloat())
             isFocusable = true
-            isFocusableInTouchMode = true
             isClickable = true
+            noDefaultFocusRing()
             setOnClickListener { switchTab(index) }
             setOnKeyListener { _, code, ev ->
                 if (ev.action == KeyEvent.ACTION_DOWN &&
@@ -221,7 +236,7 @@ class MainActivity : Activity() {
     }
 
     private fun paintTabs() {
-        listOf(tabWatch to 0, tabAll to 1).forEach { (tv, i) ->
+        listOf(tabWatch to 0, tabAll to 1, tabBooks to 2).forEach { (tv, i) ->
             val on = tab == i
             tv.setTextColor(if (on) Palette.paper else Palette.ink2)
             tv.background = shape(if (on) Palette.ink else Color.TRANSPARENT, dp(24).toFloat())
@@ -234,12 +249,21 @@ class MainActivity : Activity() {
         paintTabs()
         pageWatch.visibility = if (index == 0) View.VISIBLE else View.GONE
         pageAll.visibility = if (index == 1) View.VISIBLE else View.GONE
-        if (index == 0) {
-            previewPlayer?.play()
-            focusFirst(watchList)
-        } else {
-            previewPlayer?.pause()
-            focusFirst(allHost)
+        pageBooks.visibility = if (index == 2) View.VISIBLE else View.GONE
+        when (index) {
+            0 -> {
+                previewPlayer?.play()
+                focusFirst(watchList)
+            }
+            1 -> {
+                previewPlayer?.pause()
+                focusFirst(allHost)
+            }
+            else -> {
+                previewPlayer?.pause()
+                loadBooks()
+                focusFirst(booksHost)
+            }
         }
     }
 
@@ -260,7 +284,7 @@ class MainActivity : Activity() {
 
     private fun buildWatchPage(): View {
         val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = if (compact) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             clipChildren = false
         }
 
@@ -274,7 +298,6 @@ class MainActivity : Activity() {
             setPadding(0, 0, dp(if (compact) 4 else 12), 0)
         }
         scroller.addView(watchList, MATCH_PARENT, WRAP_CONTENT)
-        row.addView(scroller, LinearLayout.LayoutParams(dp(if (compact) 232 else 330), MATCH_PARENT))
 
         val right = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -306,7 +329,15 @@ class MainActivity : Activity() {
             }
         )
 
-        row.addView(right, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        if (compact) {
+            // 竖屏：预览在上、列表在下
+            row.addView(right, MATCH_PARENT, WRAP_CONTENT)
+            row.addView(scroller, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        } else {
+            // 电视：左列表、右预览
+            row.addView(scroller, LinearLayout.LayoutParams(dp(330), MATCH_PARENT))
+            row.addView(right, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        }
         return row
     }
 
@@ -331,8 +362,8 @@ class MainActivity : Activity() {
             setPadding(dp(8), dp(6), dp(10), dp(6))
             background = shape(Color.TRANSPARENT, dp(14).toFloat())
             isFocusable = true
-            isFocusableInTouchMode = true
             isClickable = true
+            noDefaultFocusRing()
         }
         val lp = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         lp.bottomMargin = dp(2)
@@ -501,8 +532,8 @@ class MainActivity : Activity() {
                 rightMargin = dp(if (compact) 10 else 18)
             }
             isFocusable = true
-            isFocusableInTouchMode = true
             isClickable = true
+            noDefaultFocusRing()
             clipToOutline = true
             elevation = dp(2).toFloat()
             background = shape(Palette.card, radius, dp(2), Palette.paper2)
@@ -565,6 +596,139 @@ class MainActivity : Activity() {
         return frame
     }
 
+    // ---------------- Tab 3：绘本 ----------------
+
+    private fun buildBooksPage(): View {
+        val scroller = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        booksHost = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            setPadding(0, dp(6), 0, dp(24))
+        }
+        scroller.addView(booksHost, MATCH_PARENT, WRAP_CONTENT)
+        booksHost.addView(centered("正在找绘本…", Palette.ink2, "扫 NAS 上的 PDF"))
+        return scroller
+    }
+
+    private fun loadBooks() {
+        if (booksLoaded) return
+        if (!cfg.ready) {
+            booksHost.removeAllViews()
+            booksHost.addView(centered("还没有接入 NAS", Palette.ink2, "点右上角「家长」填一下地址"))
+            return
+        }
+        booksLoaded = true
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { Books.scan(cfg) } }
+            result.onSuccess { list ->
+                books = list
+                renderBooks(list)
+            }.onFailure { e ->
+                booksHost.removeAllViews()
+                booksHost.addView(centered("读不到绘本目录", Palette.ink, e.message ?: "检查 NAS 连接"))
+            }
+        }
+    }
+
+    private fun renderBooks(list: List<Book>) {
+        booksHost.removeAllViews()
+        if (list.isEmpty()) {
+            booksHost.addView(centered("还没有绘本", Palette.ink2, "往「${cfg.booksRoot}」里放 PDF 就会出现在这里"))
+            return
+        }
+        val perRow = if (compact) 2 else 4
+        list.chunked(perRow).forEachIndexed { rowIndex, row ->
+            val rowView = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                clipChildren = false
+                setPadding(0, 0, 0, dp(if (compact) 8 else 14))
+            }
+            row.forEachIndexed { i, book ->
+                rowView.addView(bookCard(book, rowIndex * perRow + i))
+            }
+            booksHost.addView(rowView)
+        }
+    }
+
+    private fun bookCard(book: Book, index: Int): View {
+        val w = dp(if (compact) 150 else 200)
+        val h = dp(if (compact) 196 else 262)
+        val radius = dp(if (compact) 12 else 16).toFloat()
+
+        val frame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(w, h).apply {
+                rightMargin = dp(if (compact) 10 else 18)
+            }
+            isFocusable = true
+            isClickable = true
+            noDefaultFocusRing()
+            clipToOutline = true
+            elevation = dp(2).toFloat()
+            background = shape(Palette.card, radius, dp(2), Palette.paper2)
+        }
+
+        // 书脊色块
+        frame.addView(
+            View(this).apply { setBackgroundColor(Palette.cover(index)) },
+            FrameLayout.LayoutParams(dp(if (compact) 8 else 12), MATCH_PARENT, Gravity.START)
+        )
+        frame.addView(
+            label(book.title.take(1), if (compact) 44 else 60, 0x33000000, display = true).apply {
+                gravity = Gravity.CENTER
+            },
+            MATCH_PARENT, MATCH_PARENT
+        )
+
+        val cover = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+        frame.addView(cover, MATCH_PARENT, MATCH_PARENT)
+        book.cover?.let { url ->
+            val cached = Thumbs.cached(url)
+            if (cached != null) {
+                cover.setImageBitmap(cached)
+            } else {
+                Thumbs.load(url, cfg.user, cfg.pass, w, h) { bmp ->
+                    if (bmp != null) cover.setImageBitmap(bmp)
+                }
+            }
+        }
+
+        val title = label(book.title, if (compact) 11 else 14, Palette.ink, display = true).apply {
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(if (compact) 14 else 20), dp(if (compact) 10 else 14), dp(8), 0)
+        }
+        frame.addView(title, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.TOP))
+
+        frame.addView(
+            label("PDF", if (compact) 9 else 11, Palette.ink3).apply {
+                setPadding(dp(if (compact) 14 else 20), 0, 0, dp(if (compact) 8 else 12))
+            },
+            FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM)
+        )
+
+        frame.setOnFocusChangeListener { v, has ->
+            v.animate().scaleX(if (has) 1.04f else 1f).scaleY(if (has) 1.04f else 1f)
+                .setDuration(120).start()
+            v.elevation = dp(if (has) 14 else 2).toFloat()
+            v.background = shape(
+                Palette.card, radius,
+                dp(if (has) 4 else 2),
+                if (has) Palette.ink else Palette.paper2
+            )
+        }
+        frame.setOnClickListener {
+            startActivity(Intent(this, BookActivity::class.java).apply {
+                putExtra("url", book.url)
+                putExtra("title", book.title)
+            })
+        }
+        return frame
+    }
+
     // ---------------- 数据 ----------------
 
     private fun showCached() {
@@ -604,7 +768,7 @@ class MainActivity : Activity() {
     private fun renderDemo() {
         runCatching {
             renderData(listOf(Demo.section(this)))
-            subtitle.text = "演示模式 · 点右上角「家长」填 NAS 地址"
+            subtitle.text = if (compact) "演示模式 · 右上角「家长」配置" else "演示模式 · 点右上角「家长」填 NAS 地址"
         }.onFailure {
             showEmpty("还没有接入 NAS", "点右上角「家长」，用手机填一下 NAS 地址")
         }
