@@ -625,7 +625,7 @@ class MainActivity : Activity() {
                 allHost.addView(centered("NAS 上还没找到视频", Palette.ink2, "去「家长」里检查目录"))
                 return
             }
-            val perRow = if (compact) 2 else 4
+            val perRow = gridColumns
             list.chunked(perRow).forEachIndexed { rowIndex, rowSections ->
                 val rowView = row(if (compact) 8 else 16)
                 rowSections.forEachIndexed { i, sec -> rowView.addView(seriesCard(sec, rowIndex * perRow + i)) }
@@ -633,7 +633,7 @@ class MainActivity : Activity() {
             }
         } else {
             allHost.addView(expandHeader(open))
-            val perRow = if (compact) 2 else 4
+            val perRow = gridColumns
             open.videos.chunked(perRow).forEachIndexed { rowIndex, rowVideos ->
                 val rowView = row(if (compact) 8 else 16)
                 rowVideos.forEachIndexed { i, v -> rowView.addView(card(v, rowIndex * perRow + i, open)) }
@@ -655,6 +655,22 @@ class MainActivity : Activity() {
             pendingEpisodeFocus = -1
             focusNth(allHost, target)
         }
+    }
+
+    /** 卡片间距 */
+    private val gridGap: Int get() = dp(if (compact) 10 else 18)
+
+    /** 一行放几张：按可用宽度算，最小卡宽 240dp（手机 190dp），保证不会被裁 */
+    private val gridColumns: Int by lazy {
+        val content = resources.displayMetrics.widthPixels - 2 * padH
+        val minCard = dp(if (compact) 190 else 240)
+        ((content + gridGap) / (minCard + gridGap)).coerceIn(2, 6)
+    }
+
+    /** 每张卡片实际宽度：把一行铺满，最后一行也不会忽宽忽窄 */
+    private val gridCardW: Int by lazy {
+        val content = resources.displayMetrics.widthPixels - 2 * padH
+        (content - (gridColumns - 1) * gridGap) / gridColumns
     }
 
     private fun row(gap: Int): LinearLayout = LinearLayout(this).apply {
@@ -772,13 +788,19 @@ class MainActivity : Activity() {
         onFocus: ((Boolean) -> Unit)? = null,
         frameUrl: String? = null
     ): View {
-        val w = dp(if (compact) 208 else 318)
-        val h = dp(if (compact) 117 else 179)
+        val w = gridCardW
+        val h = w * 9 / 16
         val radius = dp(if (compact) 14 else 20).toFloat()
 
-        val frame = FrameLayout(this).apply {
+        val frame = object : FrameLayout(this) {
+            override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+                super.onMeasure(widthSpec, heightSpec)
+                val width = MeasureSpec.getSize(widthSpec)
+                setMeasuredDimension(width, width * 9 / 16)
+            }
+        }.apply {
             layoutParams = LinearLayout.LayoutParams(w, h).apply {
-                rightMargin = dp(if (compact) 10 else 18)
+                rightMargin = gridGap
             }
             isFocusable = true
             isClickable = true
@@ -890,7 +912,7 @@ class MainActivity : Activity() {
             booksHost.addView(centered("还没有绘本", Palette.ink2, "往「${cfg.booksRoot}」里放 PDF 就会出现在这里"))
             return
         }
-        val perRow = if (compact) 2 else 4
+        val perRow = gridColumns
         list.chunked(perRow).forEachIndexed { rowIndex, row ->
             val rowView = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -905,13 +927,19 @@ class MainActivity : Activity() {
     }
 
     private fun bookCard(book: Book, index: Int): View {
-        val w = dp(if (compact) 150 else 200)
-        val h = dp(if (compact) 196 else 262)
+        val w = gridCardW
+        val h = w * 131 / 100
         val radius = dp(if (compact) 12 else 16).toFloat()
 
-        val frame = FrameLayout(this).apply {
+        val frame = object : FrameLayout(this) {
+            override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+                super.onMeasure(widthSpec, heightSpec)
+                val width = MeasureSpec.getSize(widthSpec)
+                setMeasuredDimension(width, width * 131 / 100)
+            }
+        }.apply {
             layoutParams = LinearLayout.LayoutParams(w, h).apply {
-                rightMargin = dp(if (compact) 10 else 18)
+                rightMargin = gridGap
             }
             isFocusable = true
             isClickable = true
