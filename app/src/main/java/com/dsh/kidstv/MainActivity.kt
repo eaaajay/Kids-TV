@@ -64,7 +64,7 @@ class MainActivity : Activity() {
     private var shuffled: List<Video> = emptyList()
     private var tab = 0
 
-    /** 全部目录里点开某个系列后的状态；null 表示还在系列列表 */
+    /** 视频目录里点开某个系列后的状态；null 表示还在系列列表 */
     private var expanded: Section? = null
     /** 每集属于哪个系列（随心看只拿得到扁平列表） */
     private var seriesOf: Map<String, String> = emptyMap()
@@ -193,7 +193,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         tabWatch = tabPill("随心看", 0)
-        tabAll = tabPill("全部目录", 1)
+        tabAll = tabPill("视频目录", 1)
         tabBooks = tabPill("绘本", 2)
         tabs.addView(tabWatch)
         tabs.addView(tabAll)
@@ -384,7 +384,7 @@ class MainActivity : Activity() {
         shuffled = list
         watchList.removeAllViews()
         if (list.isEmpty()) {
-            watchList.addView(centered("这里还是空的", Palette.ink2, "去「全部目录」看看"))
+            watchList.addView(centered("这里还是空的", Palette.ink2, "去「视频目录」看看"))
             return
         }
         list.forEachIndexed { i, v -> watchList.addView(watchRow(v, i)) }
@@ -519,7 +519,7 @@ class MainActivity : Activity() {
         return map
     }
 
-    // ---------------- Tab 2：全部目录 ----------------
+    // ---------------- Tab 2：视频目录 ----------------
 
     private fun buildAllPage(): View {
         val scroller = ScrollView(this).apply {
