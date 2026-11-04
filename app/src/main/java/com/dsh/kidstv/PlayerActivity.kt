@@ -3,6 +3,7 @@ package com.dsh.kidstv
 import android.app.Activity
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -21,9 +22,11 @@ import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
@@ -41,6 +44,8 @@ import java.util.concurrent.atomic.AtomicLong
 class PlayerActivity : Activity() {
 
     private var player: ExoPlayer? = null
+    private var subsOn = true
+    private val subtitleUrls = ArrayList<String>()
     private lateinit var playerView: PlayerView
     private lateinit var spinner: ProgressBar
     private lateinit var pauseIcon: FrameLayout
@@ -112,6 +117,7 @@ class PlayerActivity : Activity() {
             keepScreenOn = true
         }
         root.addView(playerView, MATCH_PARENT, MATCH_PARENT)
+        styleSubtitles()
 
         spinner = ProgressBar(this).apply {
             indeterminateTintList = ColorStateList.valueOf(0xCCFFF7ED.toInt())
@@ -292,9 +298,29 @@ class PlayerActivity : Activity() {
             }
         })
 
-        val items = urls.map { u -> MediaItem.fromUri(u) }
+        val subs = intent.getStringArrayListExtra("subs")
+        subtitleUrls.clear()
+        urls.forEachIndexed { i, _ -> subtitleUrls.add(subs?.getOrNull(i) ?: "") }
+
+        val items = urls.mapIndexed { i, u ->
+            val cfg = subtitleFor(subtitleUrls[i])
+            if (cfg == null) {
+                MediaItem.fromUri(u)
+            } else {
+                MediaItem.Builder()
+                    .setUri(u)
+                    .setSubtitleConfigurations(listOf(cfg))
+                    .build()
+            }
+        }
         exo.setMediaItems(items, startIndex, 0L)
         exo.playbackParameters = PlaybackParameters(speeds[speedIndex], 1f)
+        // 有字幕就默认选上英文轨；没字幕时这段没有副作用
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+            .setPreferredTextLanguage("en")
+            .setSelectUndeterminedTextLanguage(true)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subsOn)
+            .build()
         exo.prepare()
         exo.playWhenReady = true
         player = exo
@@ -369,6 +395,52 @@ class PlayerActivity : Activity() {
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
+    /** 同名外挂字幕 → ExoPlayer 的 SubtitleConfiguration */
+    private fun subtitleFor(url: String?): MediaItem.SubtitleConfiguration? {
+        if (url.isNullOrBlank()) return null
+        val mime = when {
+            url.endsWith(".srt", true) -> MimeTypes.APPLICATION_SUBRIP
+            url.endsWith(".vtt", true) -> MimeTypes.TEXT_VTT
+            url.endsWith(".ass", true) || url.endsWith(".ssa", true) -> MimeTypes.TEXT_SSA
+            else -> return null
+        }
+        return runCatching {
+            MediaItem.SubtitleConfiguration.Builder(Uri.parse(url))
+                .setMimeType(mime)
+                .setLanguage("en")
+                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                .build()
+        }.getOrNull()
+    }
+
+    private fun styleSubtitles() {
+        playerView.subtitleView?.apply {
+            setStyle(
+                CaptionStyleCompat(
+                    Color.WHITE,
+                    Color.TRANSPARENT,
+                    Color.TRANSPARENT,
+                    CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                    Color.BLACK,
+                    null
+                )
+            )
+            setFractionalTextSize(0.055f)
+            setBottomPaddingFraction(0.08f)
+            setApplyEmbeddedStyles(true)
+        }
+    }
+
+    private fun toggleSubs() {
+        subsOn = !subsOn
+        player?.let { exo ->
+            exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subsOn)
+                .build()
+        }
+        toast(if (subsOn) "字幕：开" else "字幕：关")
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
             event.keyCode != KeyEvent.KEYCODE_BACK
@@ -380,6 +452,11 @@ class PlayerActivity : Activity() {
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
                     changeSpeed(1)
+                    return true
+                }
+                KeyEvent.KEYCODE_MENU,
+                KeyEvent.KEYCODE_CAPTIONS -> {
+                    toggleSubs()
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_CENTER,

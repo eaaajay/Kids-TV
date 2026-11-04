@@ -1131,6 +1131,7 @@ class MainActivity : Activity() {
         val intent = Intent(this, PlayerActivity::class.java)
         intent.putStringArrayListExtra("urls", ArrayList(list.map { it.url }))
         intent.putStringArrayListExtra("titles", ArrayList(list.map { it.title }))
+        intent.putStringArrayListExtra("subs", ArrayList(list.map { it.sub ?: "" }))
         intent.putExtra("index", index)
         startActivity(intent)
     }
