@@ -37,18 +37,17 @@ fun Context.sp(v: Number): Float = TypedValue.applyDimension(
     TypedValue.COMPLEX_UNIT_SP, v.toFloat(), resources.displayMetrics
 )
 
+/**
+ * 标题/强调用的字体。
+ * 以前打包的是「站酷快乐体」（ZCOOL KuaiLe）—— 那是手写体，笔画本身带倾斜，
+ * 看着像斜体。现在统一用系统无衬线中黑，顺带把 1.4MB 的字体文件从包里去掉。
+ */
 object Type {
-    @Volatile
-    private var face: Typeface? = null
-
-    fun display(ctx: Context): Typeface {
-        face?.let { return it }
-        val f = runCatching {
-            Typeface.createFromAsset(ctx.assets, "fonts/ZCOOLKuaiLe-Regular.ttf")
-        }.getOrNull() ?: Typeface.DEFAULT_BOLD
-        face = f
-        return f
+    private val face: Typeface by lazy {
+        Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
+
+    fun display(@Suppress("UNUSED_PARAMETER") ctx: Context): Typeface = face
 }
 
 fun shape(

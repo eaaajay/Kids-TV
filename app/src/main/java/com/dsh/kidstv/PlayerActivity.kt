@@ -10,35 +10,70 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import okhttp3.Credentials
+import java.util.concurrent.atomic.AtomicLong
 
 @OptIn(UnstableApi::class)
 class PlayerActivity : Activity() {
 
     private var player: ExoPlayer? = null
     private lateinit var playerView: PlayerView
-    private lateinit var titleView: TextView
     private lateinit var spinner: ProgressBar
+    private lateinit var pauseIcon: FrameLayout
+
+    /** 底部横幅：标题 + 缓存进度 + 下载速度 + 倍速，3 秒后自动收起 */
+    private lateinit var banner: LinearLayout
+    private lateinit var statsView: TextView
+    private lateinit var bufferBar: ProgressBar
+    private val speedChips = ArrayList<TextView>()
+
     private var urls = ArrayList<String>()
-    private var titles = ArrayList<String>()
     private var startIndex = 0
+
     private val ui = Handler(Looper.getMainLooper())
+
+    // ---- 倍速 ----
+    private val speeds = floatArrayOf(0.75f, 1f, 1.25f)
+    private val speedLabels = arrayOf("0.75", "1", "1.25")
+    private var speedIndex = 1
+
+    // ---- 缓存 / 速度 ----
+    private val transferred = AtomicLong(0)
+    private var lastBytes = 0L
+
+    private var resumeAfterPause = false
+
+    private val hideBanner = Runnable { fadeOutBanner() }
+    private val ticker = object : Runnable {
+        override fun run() {
+            updateStats()
+            ui.postDelayed(this, 1000)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,13 +81,14 @@ class PlayerActivity : Activity() {
         hideSystemUi()
 
         urls = intent.getStringArrayListExtra("urls") ?: ArrayList()
-        titles = intent.getStringArrayListExtra("titles") ?: ArrayList()
         startIndex = intent.getIntExtra("index", 0).coerceIn(0, (urls.size - 1).coerceAtLeast(0))
+        speedIndex = Prefs.speedIndex(this).coerceIn(0, speeds.size - 1)
 
         setContentView(buildUi())
         startPlayback()
-        if (titles.isNotEmpty()) titleView.text = titles.getOrElse(startIndex) { "" }
-        fadeTitleLater()
+        paintSpeedChips()
+        showBanner()
+        ui.post(ticker)
     }
 
     private fun hideSystemUi() {
@@ -83,20 +119,99 @@ class PlayerActivity : Activity() {
         }
         root.addView(spinner, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER))
 
-        titleView = label("", 24, 0xFFFFF7ED.toInt(), display = true).apply {
-            setShadowLayer(12f, 0f, 2f, 0xCC000000.toInt())
-            setPadding(dp(52), dp(36), dp(52), 0)
+        // 暂停图标：圆底两条竖杠，不依赖字体
+        val bars = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
         }
+        bars.addView(View(this).apply { setBackgroundColor(0xFFFFF7ED.toInt()) }, dp(7), dp(34))
+        bars.addView(
+            View(this).apply { setBackgroundColor(0xFFFFF7ED.toInt()) },
+            LinearLayout.LayoutParams(dp(7), dp(34)).apply { leftMargin = dp(7) }
+        )
+        pauseIcon = FrameLayout(this).apply {
+            visibility = View.GONE
+            background = shape(0x99000000.toInt(), dp(999).toFloat())
+        }
+        pauseIcon.addView(bars, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER))
+        root.addView(pauseIcon, FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER))
+
         root.addView(
-            titleView,
-            FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.TOP or Gravity.START)
+            buildBanner(),
+            FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM).apply {
+                leftMargin = dp(28)
+                rightMargin = dp(28)
+                bottomMargin = dp(22)
+            }
         )
 
-        val hint = label("按返回键退出", 14, 0x88FFF7ED.toInt()).apply {
-            setPadding(dp(40), 0, dp(48), dp(34))
-        }
-        root.addView(hint, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.BOTTOM or Gravity.END))
+        // 手机/触摸屏：点一下就是播放暂停，同时把横幅叫回来
+        root.isClickable = true
+        root.setOnClickListener { togglePlay() }
         return root
+    }
+
+    private fun buildBanner(): View {
+        banner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            background = shape(0xD9101316.toInt(), dp(16).toFloat(), dp(1), 0x33FFF7ED)
+        }
+
+        // 一行放完：左边缓存进度和下载速度，右边倍速
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        statsView = label("", 13, 0xCCFFF7ED.toInt())
+        row.addView(statsView, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+
+        speeds.indices.forEach { i ->
+            val chip = label(speedLabels[i], 13, 0xCCFFF7ED.toInt(), display = true).apply {
+                setPadding(dp(12), dp(4), dp(12), dp(4))
+                isClickable = true
+                setOnClickListener {
+                    speedIndex = i
+                    applySpeed()
+                }
+            }
+            speedChips += chip
+            row.addView(
+                chip,
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(6) }
+            )
+        }
+        banner.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        bufferBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            progressTintList = ColorStateList.valueOf(Palette.coral)
+            progressBackgroundTintList = ColorStateList.valueOf(0x44FFFFFF)
+        }
+        banner.addView(
+            bufferBar,
+            LinearLayout.LayoutParams(MATCH_PARENT, dp(3)).apply { topMargin = dp(8) }
+        )
+        return banner
+    }
+
+    // ---------------- 横幅显隐 ----------------
+
+    private fun showBanner() {
+        banner.animate().cancel()
+        banner.visibility = View.VISIBLE
+        banner.animate().alpha(1f).setDuration(150).start()
+        ui.removeCallbacks(hideBanner)
+        // 暂停时别自动消失，否则屏幕上什么信息都没有
+        if (player?.playWhenReady != false) ui.postDelayed(hideBanner, 3000)
+    }
+
+    private fun fadeOutBanner() {
+        if (player?.playWhenReady == false) return
+        banner.animate().alpha(0f).setDuration(280)
+            .withEndAction { if (banner.alpha < 0.05f) banner.visibility = View.GONE }
+            .start()
     }
 
     private fun startPlayback() {
@@ -115,17 +230,30 @@ class PlayerActivity : Activity() {
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(30000)
+            .setTransferListener(object : TransferListener {
+                override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+                override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+                override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+                override fun onBytesTransferred(
+                    source: DataSource,
+                    dataSpec: DataSpec,
+                    isNetwork: Boolean,
+                    byteCount: Int
+                ) {
+                    if (isNetwork) transferred.addAndGet(byteCount.toLong())
+                }
+            })
 
-        // DefaultDataSource 让 file:// 演示片和 http:// NAS 视频走同一套播放器
+        // DefaultDataSource 让 file:// 演示片和 http(s):// NAS 视频走同一套播放器
         val base = DefaultDataSource.Factory(this, dataSource)
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(base))
             .build()
 
         exo.setAudioAttributes(
-            androidx.media3.common.AudioAttributes.Builder()
-                .setUsage(androidx.media3.common.C.USAGE_MEDIA)
-                .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+            AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                 .build(),
             true
         )
@@ -136,17 +264,26 @@ class PlayerActivity : Activity() {
                     if (exo.hasNextMediaItem()) {
                         exo.seekToNextMediaItem()
                         exo.play()
-                        showTitle()
+                        showBanner()
                     } else {
                         finish()
                     }
                 }
+                updateStats()
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                val idx = exo.currentMediaItemIndex
-                titleView.text = titles.getOrElse(idx) { "" }
-                showTitle()
+                showBanner()
+                updateStats()
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                updatePauseIcon()
+                showBanner()
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                updatePauseIcon()
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -157,37 +294,120 @@ class PlayerActivity : Activity() {
 
         val items = urls.map { u -> MediaItem.fromUri(u) }
         exo.setMediaItems(items, startIndex, 0L)
+        exo.playbackParameters = PlaybackParameters(speeds[speedIndex], 1f)
         exo.prepare()
         exo.playWhenReady = true
         player = exo
         playerView.player = exo
     }
 
-    private fun showTitle() {
-        titleView.animate().alpha(1f).setDuration(180).start()
-        fadeTitleLater()
+    // ---------------- 播放 / 暂停 ----------------
+
+    private fun togglePlay() {
+        val p = player ?: return
+        if (p.playWhenReady) p.pause() else p.play()
+        updatePauseIcon()
+        showBanner()
     }
 
-    private fun fadeTitleLater() {
-        ui.removeCallbacksAndMessages(null)
-        ui.postDelayed({ titleView.animate().alpha(0f).setDuration(600).start() }, 4000)
+    private fun updatePauseIcon() {
+        val paused = player?.playWhenReady == false
+        pauseIcon.visibility = if (paused) View.VISIBLE else View.GONE
+        if (paused) ui.removeCallbacks(hideBanner)
+    }
+
+    // ---------------- 倍速 ----------------
+
+    private fun changeSpeed(delta: Int) {
+        speedIndex = ((speedIndex + delta) % speeds.size + speeds.size) % speeds.size
+        applySpeed()
+    }
+
+    private fun applySpeed() {
+        player?.playbackParameters = PlaybackParameters(speeds[speedIndex], 1f)
+        Prefs.setSpeedIndex(this, speedIndex)
+        paintSpeedChips()
+        updateStats()
+        showBanner()
+    }
+
+    private fun paintSpeedChips() {
+        speedChips.forEachIndexed { i, chip ->
+            val on = i == speedIndex
+            chip.setTextColor(if (on) Palette.ink else 0xCCFFF7ED.toInt())
+            chip.background = shape(if (on) Palette.paper else 0x22FFFFFF, dp(999).toFloat())
+        }
+    }
+
+    // ---------------- 缓存 / 速度 ----------------
+
+    private fun updateStats() {
+        val p = player ?: return
+        val bytes = transferred.get()
+        val perSec = (bytes - lastBytes).coerceAtLeast(0L)
+        lastBytes = bytes
+        val rate = human(perSec) + "/s"
+
+        val dur = p.duration
+        val buf = p.bufferedPosition
+        if (dur > 0 && dur != C.TIME_UNSET) {
+            val pct = (buf.coerceAtMost(dur) * 100 / dur).toInt().coerceIn(0, 100)
+            bufferBar.progress = pct
+            statsView.text = "缓存 $pct% · $rate"
+        } else {
+            // 时长还没拿到（刚起播）就报已缓存多少
+            bufferBar.progress = 0
+            statsView.text = "已缓存 ${human(bytes)} · $rate"
+        }
+    }
+
+    private fun human(bytes: Long): String = when {
+        bytes >= 1024L * 1024 -> String.format("%.1f MB", bytes / 1048576.0)
+        bytes >= 1024L -> String.format("%.0f KB", bytes / 1024.0)
+        else -> "$bytes B"
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // 按任意键把标题叫回来；返回键直接退出（不再要求长按）
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
             event.keyCode != KeyEvent.KEYCODE_BACK
         ) {
-            showTitle()
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    changeSpeed(-1)
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    changeSpeed(1)
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_NUMPAD_ENTER,
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                KeyEvent.KEYCODE_HEADSETHOOK -> {
+                    togglePlay()
+                    return true
+                }
+            }
+            showBanner()
         }
         return super.dispatchKeyEvent(event)
     }
 
     override fun onPause() {
         super.onPause()
+        resumeAfterPause = player?.playWhenReady == true
         player?.pause()
+        showBanner()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (resumeAfterPause) player?.play()
+        resumeAfterPause = false
+        showBanner()
     }
 
     override fun onDestroy() {
