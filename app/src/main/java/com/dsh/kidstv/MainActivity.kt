@@ -660,10 +660,10 @@ class MainActivity : Activity() {
     /** 卡片间距 */
     private val gridGap: Int get() = dp(if (compact) 10 else 18)
 
-    /** 一行放几张：按可用宽度算，最小卡宽 240dp（手机 190dp），保证不会被裁 */
+    /** 一行放几张：按可用宽度算，最小卡宽 190dp（手机 170dp），保证不会被裁 */
     private val gridColumns: Int by lazy {
         val content = resources.displayMetrics.widthPixels - 2 * padH
-        val minCard = dp(if (compact) 190 else 240)
+        val minCard = dp(if (compact) 170 else 190)
         ((content + gridGap) / (minCard + gridGap)).coerceIn(2, 6)
     }
 
