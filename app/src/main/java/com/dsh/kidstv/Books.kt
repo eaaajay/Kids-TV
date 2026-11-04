@@ -21,9 +21,21 @@ object Books {
     fun scan(cfg: NasConfig): List<Book> {
         val dav = DavClient(cfg)
         val out = ArrayList<Book>()
-        val order = Comparator<DavEntry> { a, b -> Library.natCompare(a.name, b.name) }
 
-        val root = dav.propfind(DavClient.encodePath(cfg.booksRoot), 1)
+        // 没单独配绘本目录时，先看 NAS 根下的 /绘本；那里没有 PDF 再退回视频根目录
+        val primary = if (cfg.booksPath.isBlank()) DEFAULT_ROOT else cfg.booksRoot
+        scanInto(dav, primary, out)
+        if (out.isEmpty() && cfg.booksPath.isBlank() && primary != cfg.rootPath) {
+            scanInto(dav, cfg.rootPath, out)
+        }
+        return out
+    }
+
+    private const val DEFAULT_ROOT = "/绘本"
+
+    private fun scanInto(dav: DavClient, path: String, out: MutableList<Book>) {
+        val order = Comparator<DavEntry> { a, b -> Library.natCompare(a.name, b.name) }
+        val root = runCatching { dav.propfind(DavClient.encodePath(path), 1) }.getOrNull() ?: return
         collect(dav, root, out)
 
         // 和视频一样要能往下钻：绘本也常常放在好几层目录里
@@ -38,7 +50,6 @@ object Books {
             if (depth >= 4) continue
             children.filter { it.isDir }.sortedWith(order).forEach { queue.addLast(it to depth + 1) }
         }
-        return out
     }
 
     private fun collect(dav: DavClient, entries: List<DavEntry>, out: MutableList<Book>) {
