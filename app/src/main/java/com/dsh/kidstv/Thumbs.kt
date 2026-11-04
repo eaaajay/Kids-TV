@@ -11,7 +11,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -23,7 +22,9 @@ object Thumbs {
 
     private val main = Handler(Looper.getMainLooper())
     private val pool = Executors.newFixedThreadPool(3)
-    private val inflight = ConcurrentHashMap<String, Boolean>()
+    /** 正在下载的 URL -> 等这张图的所有回调。同一个 URL 只发一次请求，但每个调用方都要回。 */
+    private val inflight = HashMap<String, MutableList<(Bitmap?) -> Unit>>()
+    private val lock = Any()
     private var dir: File? = null
 
     private val maxMem = (Runtime.getRuntime().maxMemory() / 6).toInt().coerceAtLeast(16 * 1024 * 1024)
@@ -49,7 +50,11 @@ object Thumbs {
 
     fun load(url: String, user: String, pass: String, reqW: Int, reqH: Int, onDone: (Bitmap?) -> Unit) {
         mem.get(url)?.let { onDone(it); return }
-        if (inflight.putIfAbsent(url, true) != null) return
+
+        // 已经有一个请求在跑：把自己排进同一批等结果，别直接丢掉。
+        // 旧代码这里是「inflight 里已有就 return」，第二个调用方永远收不到 onDone，
+        // 那张卡片就一直空着（刷新、来回切 tab 时最容易碰到）。
+        val waiting = enqueue(url, onDone) ?: return
 
         pool.execute {
             var bmp: Bitmap? = null
@@ -75,13 +80,33 @@ object Thumbs {
                 }
             } catch (_: Exception) {
             } finally {
-                inflight.remove(url)
+                // 先写内存缓存，再从 inflight 里摘掉：这中间进来的调用方能直接命中 mem，
+                // 不会因为「刚下载完还没缓存」又打一次网络。
+                if (bmp != null) mem.put(url, bmp)
+                val done = synchronized(lock) {
+                    inflight.remove(url)
+                    waiting.toList()
+                }
+                val result = bmp
+                main.post { done.forEach { cb -> runCatching { cb(result) } } }
             }
-            val result = bmp
-            if (result != null) mem.put(url, result)
-            main.post { onDone(result) }
         }
     }
+
+    /** 把回调挂到 url 上；返回本次负责收尾的那批等待者，已有请求在跑则返回 null。 */
+    private fun enqueue(url: String, onDone: (Bitmap?) -> Unit): MutableList<(Bitmap?) -> Unit>? =
+        synchronized(lock) {
+            val running = inflight[url]
+            if (running != null) {
+                running.add(onDone)
+                null
+            } else {
+                ArrayList<(Bitmap?) -> Unit>().also {
+                    it.add(onDone)
+                    inflight[url] = it
+                }
+            }
+        }
 
     private fun decodeFile(f: File, w: Int, h: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

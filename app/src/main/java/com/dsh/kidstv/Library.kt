@@ -28,37 +28,54 @@ object Library {
     fun isVideo(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in VIDEO_EXT
     private fun isImage(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in IMAGE_EXT
 
+    private val natural = Comparator<DavEntry> { a, b -> natCompare(a.name, b.name) }
+
+    /** 一次扫描最多发多少个 PROPFIND；走中继时每个都要几百毫秒，必须封顶 */
+    private const val MAX_REQUESTS = 90
+    private const val MAX_SECTIONS = 60
+    private const val MAX_DEPTH = 4
+
     fun scan(cfg: NasConfig, onStep: (String) -> Unit = {}): List<Section> {
         val dav = DavClient(cfg)
         val rootHref = DavClient.encodePath(cfg.rootPath)
         onStep("连接 NAS")
         val root = dav.propfind(rootHref, 1)
 
-        val dirs = root.filter { it.isDir }.sortedWith(Comparator { a, b -> natCompare(a.name, b.name) })
-        val rootVideos = root.filter { !it.isDir && isVideo(it.name) }
-
         val sections = ArrayList<Section>()
 
+        val rootVideos = root.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
         if (rootVideos.isNotEmpty()) {
             val art = artMap(root)
             sections += Section(
                 cfg.title.ifBlank { "英语时间" },
-                rootVideos.sortedWith(Comparator { a, b -> natCompare(a.name, b.name) })
-                    .map { toVideo(dav, it, art) }
+                rootVideos.map { toVideo(dav, it, art) }
             )
         }
 
-        dirs.take(40).forEach { dir ->
-            onStep(dir.name)
-            val children = runCatching { dav.propfind(dir.href, 1) }.getOrNull() ?: return@forEach
-            val vids = children.filter { !it.isDir && isVideo(it.name) }
-            if (vids.isEmpty()) return@forEach
-            val art = artMap(children)
-            sections += Section(
-                cleanTitle(dir.name),
-                vids.sortedWith(Comparator { a, b -> natCompare(a.name, b.name) })
-                    .map { toVideo(dav, it, art) }
-            )
+        // 一层层往下找：哪个目录里直接有视频，就把它当成一个"系列"。
+        // 以前只下钻一层，像 /视频资源/儿童视频/小猪佩奇第一部/ 这种四层结构
+        // 会整个扫不到，界面只会说"NAS 里还没有视频"。
+        val queue = ArrayDeque<Pair<DavEntry, Int>>()
+        root.filter { it.isDir }.sortedWith(natural).forEach { queue.addLast(it to 1) }
+        val visited = HashSet<String>()
+        var budget = MAX_REQUESTS
+
+        while (queue.isNotEmpty() && budget > 0 && sections.size < MAX_SECTIONS) {
+            val (dir, depth) = queue.removeFirst()
+            if (!visited.add(dir.href)) continue
+            budget--
+            onStep(cleanTitle(dir.name))
+            val children = runCatching { dav.propfind(dir.href, 1) }.getOrNull() ?: continue
+
+            val vids = children.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
+            if (vids.isNotEmpty()) {
+                val art = artMap(children)
+                sections += Section(cleanTitle(dir.name), vids.map { toVideo(dav, it, art) })
+                // 这个目录自己就有视频，就不再往里钻，免得父子重复
+                continue
+            }
+            if (depth >= MAX_DEPTH) continue
+            children.filter { it.isDir }.sortedWith(natural).forEach { queue.addLast(it to depth + 1) }
         }
 
         return sections

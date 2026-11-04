@@ -21,17 +21,23 @@ object Books {
     fun scan(cfg: NasConfig): List<Book> {
         val dav = DavClient(cfg)
         val out = ArrayList<Book>()
+        val order = Comparator<DavEntry> { a, b -> Library.natCompare(a.name, b.name) }
 
         val root = dav.propfind(DavClient.encodePath(cfg.booksRoot), 1)
         collect(dav, root, out)
 
-        root.filter { it.isDir }
-            .sortedWith(Comparator { a, b -> Library.natCompare(a.name, b.name) })
-            .take(60)
-            .forEach { dir ->
-                val children = runCatching { dav.propfind(dir.href, 1) }.getOrNull() ?: return@forEach
-                collect(dav, children, out)
-            }
+        // 和视频一样要能往下钻：绘本也常常放在好几层目录里
+        val queue = ArrayDeque<Pair<DavEntry, Int>>()
+        root.filter { it.isDir }.sortedWith(order).forEach { queue.addLast(it to 1) }
+        var budget = 60
+        while (queue.isNotEmpty() && budget > 0 && out.size < 300) {
+            val (dir, depth) = queue.removeFirst()
+            budget--
+            val children = runCatching { dav.propfind(dir.href, 1) }.getOrNull() ?: continue
+            collect(dav, children, out)
+            if (depth >= 4) continue
+            children.filter { it.isDir }.sortedWith(order).forEach { queue.addLast(it to depth + 1) }
+        }
         return out
     }
 

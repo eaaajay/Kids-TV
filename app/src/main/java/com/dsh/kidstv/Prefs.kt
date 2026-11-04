@@ -51,12 +51,18 @@ object Prefs {
             .apply()
     }
 
+    /** 上次选的倍速（0.75× 起，索引 1 = 1.0×） */
+    fun speedIndex(c: Context): Int = sp(c).getInt("speed", 1)
+
+    fun setSpeedIndex(c: Context, i: Int) {
+        sp(c).edit().putInt("speed", i).apply()
+    }
+
     fun clear(c: Context) {
         sp(c).edit().clear().apply()
     }
 
     fun pin(c: Context): String = sp(c).getString("pin", "1234") ?: "1234"
-
     fun setPin(c: Context, pin: String) {
         sp(c).edit().putString("pin", pin).apply()
     }

@@ -2,6 +2,7 @@ package com.dsh.kidstv
 
 import android.app.Activity
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.os.Bundle
 import android.text.TextUtils
@@ -15,6 +16,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -59,6 +61,11 @@ class MainActivity : Activity() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var sections: List<Section> = emptyList()
+    /** 当前显示的是不是演示片（用来判断"连不上 NAS"要不要盖掉演示墙） */
+    private var showingDemo = false
+    /** 启动时盖在内容上的「正在扫描」，扫完才露出主界面 */
+    private lateinit var splash: View
+    private lateinit var splashStep: TextView
     private var books: List<Book> = emptyList()
     private var booksLoaded = false
     private var shuffled: List<Video> = emptyList()
@@ -68,6 +75,8 @@ class MainActivity : Activity() {
     private var expanded: Section? = null
     /** 每集属于哪个系列（随心看只拿得到扁平列表） */
     private var seriesOf: Map<String, String> = emptyMap()
+    /** 系列 -> 用来抽封面的那一集（每个系列只抽一次） */
+    private var coverUrlFor: Map<String, String> = emptyMap()
     /** 从哪个系列点进去的，返回时把焦点放回去 */
     private var expandedFrom: Int = 0
 
@@ -76,14 +85,19 @@ class MainActivity : Activity() {
     private var previewJob: Job? = null
     private var currentPreview: String? = null
     private var pendingSeriesFocus: Int = -1
+    /** 当前打开的系列里，焦点停在第几集（刷新前记下来，刷新后还原） */
+    private var focusedEpisode: Int = -1
+    /** 下一次渲染完要把焦点还给第几集；-1 表示没有待还原的位置 */
+    private var pendingEpisodeFocus: Int = -1
 
     /** 窄屏（手机竖屏）紧凑排版；电视上仍是 10 尺大字 */
-    private val compact: Boolean by lazy { resources.configuration.screenWidthDp < 600 }
+    private val compact: Boolean get() = resources.configuration.screenWidthDp < 600
     private val padH: Int get() = dp(if (compact) 18 else 52)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Thumbs.init(this)
+        Frames.init(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemUi()
 
@@ -91,7 +105,7 @@ class MainActivity : Activity() {
         setContentView(buildUi())
 
         if (cfg.ready) {
-            showCached()
+            if (!showCached()) showSplash()
             refresh()
         } else {
             renderDemo()
@@ -107,13 +121,28 @@ class MainActivity : Activity() {
         super.onResume()
         hideSystemUi()
         if (tab == 0 && currentPreview != null) previewPlayer?.play()
+        // 整份配置比对，不能只比 cacheKey（scheme+host+port+path）：
+        // 只改账号或密码时地址没变，旧代码会一直拿旧密码去请求，只有杀进程才生效。
         val now = Prefs.load(this)
-        if (now.ready && now.cacheKey != cfg.cacheKey) {
+        if (now != cfg) {
             cfg = now
             booksLoaded = false
             books = emptyList()
-            showCached()
-            refresh()
+            currentPreview = null
+            pendingSeriesFocus = -1
+            focusedEpisode = -1
+            if (now.ready) {
+                if (!showCached()) showSplash()
+                refresh()
+            } else {
+                // 家长把 NAS 清空了：退回演示墙，别继续显示上一份内容
+                sections = emptyList()
+                seriesOf = emptyMap()
+                expanded = null
+                renderDemo()
+            }
+            // 停在绘本页时也要跟着换掉旧 NAS 的书（否则卡片还在，点开却全是旧地址）
+            if (tab == 2) loadBooks()
         }
     }
 
@@ -168,7 +197,64 @@ class MainActivity : Activity() {
         pageBooks.visibility = View.GONE
 
         paintTabs()
+        root.addView(buildSplash(), MATCH_PARENT, MATCH_PARENT)
         return root
+    }
+
+    private fun buildSplash(): View {
+        val wrap = FrameLayout(this).apply {
+            setBackgroundColor(Palette.paper)
+            visibility = View.GONE
+            isClickable = true
+        }
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+        }
+        col.addView(label("夏夏看电视", if (compact) 26 else 40, Palette.ink, display = true).apply {
+            gravity = Gravity.CENTER
+        })
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(Palette.coral)
+            progressBackgroundTintList = ColorStateList.valueOf(Palette.paper2)
+        }
+        col.addView(
+            bar,
+            LinearLayout.LayoutParams(dp(if (compact) 200 else 420), dp(6)).apply { topMargin = dp(26) }
+        )
+        splashStep = label("正在连接 NAS…", if (compact) 13 else 16, Palette.ink2).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(16), 0, 0)
+        }
+        col.addView(splashStep)
+        col.addView(
+            label("第一次扫描会慢一点，之后有缓存就秒开", if (compact) 11 else 13, Palette.ink3).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, 0)
+            }
+        )
+        wrap.addView(col, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER))
+        splash = wrap
+        return wrap
+    }
+
+    private fun showSplash() {
+        splash.alpha = 1f
+        splash.visibility = View.VISIBLE
+        splashStep.text = "正在连接 NAS…"
+        // 中继慢的时候别把人永远锁在启动页：45 秒还没扫完就先放行
+        scope.launch {
+            delay(45_000)
+            if (splash.visibility == View.VISIBLE) hideSplash()
+        }
+    }
+
+    private fun hideSplash() {
+        if (splash.visibility != View.VISIBLE) return
+        splash.animate().alpha(0f).setDuration(220)
+            .withEndAction { splash.visibility = View.GONE }
+            .start()
     }
 
     private fun header(): View {
@@ -340,7 +426,10 @@ class MainActivity : Activity() {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec)
                 val w = MeasureSpec.getSize(widthMeasureSpec)
-                setMeasuredDimension(w, (w * 9) / 16)
+                // 高度不能只按 16:9 算：手机上横屏时整屏宽算出来 450dp 高，
+                // 会把下面那栏列表挤得一点不剩。给个屏幕高度的上限。
+                val cap = (resources.displayMetrics.heightPixels * 0.42f).toInt()
+                setMeasuredDimension(w, minOf((w * 9) / 16, cap))
             }
         }.apply {
             background = shape(Palette.ink, dp(if (compact) 12 else 22).toFloat())
@@ -423,16 +512,7 @@ class MainActivity : Activity() {
         )
         val img = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
         thumb.addView(img, MATCH_PARENT, MATCH_PARENT)
-        v.thumb?.let { url ->
-            val cached = Thumbs.cached(url)
-            if (cached != null) {
-                img.setImageBitmap(cached)
-            } else {
-                Thumbs.load(url, cfg.user, cfg.pass, thumbW, thumbH) { bmp ->
-                    if (bmp != null) img.setImageBitmap(bmp)
-                }
-            }
-        }
+        bindCover(img, v.thumb, coverUrlFor[seriesOf[v.url]], thumbW, thumbH)
         row.addView(thumb, thumbW, thumbH)
 
         val texts = LinearLayout(this).apply {
@@ -562,11 +642,17 @@ class MainActivity : Activity() {
         }
 
         if (tab == 1) {
-            val target = if (open == null) {
-                val n = pendingSeriesFocus
-                pendingSeriesFocus = -1
-                n.coerceAtLeast(0)
-            } else 1
+            val target = when {
+                open == null -> {
+                    val n = pendingSeriesFocus
+                    pendingSeriesFocus = -1
+                    n.coerceAtLeast(0)
+                }
+                // 刷新后落回原来那一集；没有记录就落在第一集（0 号是「← 全部剧集」）
+                pendingEpisodeFocus >= 0 -> 1 + pendingEpisodeFocus
+                else -> 1
+            }
+            pendingEpisodeFocus = -1
             focusNth(allHost, target)
         }
     }
@@ -580,12 +666,16 @@ class MainActivity : Activity() {
     private fun expand(section: Section, fromIndex: Int) {
         expanded = section
         expandedFrom = fromIndex
+        focusedEpisode = 0
+        pendingEpisodeFocus = -1
         renderAll(sections)
     }
 
     private fun collapse() {
         expanded = null
         pendingSeriesFocus = expandedFrom
+        focusedEpisode = -1
+        pendingEpisodeFocus = -1
         renderAll(sections)
     }
 
@@ -631,8 +721,33 @@ class MainActivity : Activity() {
             coverUrl = section.videos.firstNotNullOfOrNull { it.thumb },
             initial = section.title.take(1),
             index = index,
-            onClick = { expand(section, index) }
+            onClick = { expand(section, index) },
+            frameUrl = section.videos.firstOrNull()?.url
         )
+
+    /** 有同名封面图就用图；没有就从视频里抽一帧；都不行就留彩色占位 */
+    private fun bindCover(img: ImageView, coverUrl: String?, frameUrl: String?, w: Int, h: Int) {
+        if (coverUrl != null) {
+            val cached = Thumbs.cached(coverUrl)
+            if (cached != null) {
+                img.setImageBitmap(cached)
+                return
+            }
+            Thumbs.load(coverUrl, cfg.user, cfg.pass, w, h) { bmp ->
+                if (bmp != null) img.setImageBitmap(bmp)
+            }
+            return
+        }
+        if (frameUrl == null) return
+        val cached = Frames.cached(frameUrl)
+        if (cached != null) {
+            img.setImageBitmap(cached)
+            return
+        }
+        Frames.load(frameUrl, cfg.user, cfg.pass, w, h) { bmp ->
+            if (bmp != null) img.setImageBitmap(bmp)
+        }
+    }
 
     private fun card(video: Video, index: Int, section: Section): View =
         tile(
@@ -641,7 +756,10 @@ class MainActivity : Activity() {
             coverUrl = video.thumb,
             initial = video.title.take(1),
             index = index,
-            onClick = { playList(section.videos, index) }
+            onClick = { playList(section.videos, index) },
+            // 记住焦点停在第几集，刷新后按这个位置还原
+            onFocus = { has -> if (has) focusedEpisode = index },
+            frameUrl = coverUrlFor[section.title]
         )
 
     private fun tile(
@@ -650,7 +768,9 @@ class MainActivity : Activity() {
         coverUrl: String?,
         initial: String,
         index: Int,
-        onClick: () -> Unit
+        onClick: () -> Unit,
+        onFocus: ((Boolean) -> Unit)? = null,
+        frameUrl: String? = null
     ): View {
         val w = dp(if (compact) 208 else 318)
         val h = dp(if (compact) 117 else 179)
@@ -706,16 +826,7 @@ class MainActivity : Activity() {
             )
         }
 
-        if (coverUrl != null) {
-            val cached = Thumbs.cached(coverUrl)
-            if (cached != null) {
-                img.setImageBitmap(cached)
-            } else {
-                Thumbs.load(coverUrl, cfg.user, cfg.pass, w, h) { bmp ->
-                    if (bmp != null) img.setImageBitmap(bmp)
-                }
-            }
-        }
+        bindCover(img, coverUrl, frameUrl, w, h)
 
         frame.setOnFocusChangeListener { v, has ->
             v.animate()
@@ -729,6 +840,7 @@ class MainActivity : Activity() {
                 dp(if (has) 5 else 2),
                 if (has) Palette.ink else Palette.paper2
             )
+            onFocus?.invoke(has)
         }
         frame.setOnClickListener { onClick() }
         return frame
@@ -869,17 +981,38 @@ class MainActivity : Activity() {
 
     // ---------------- 数据 ----------------
 
-    private fun showCached() {
+    /** 有缓存就直接渲染并返回 true；没有就返回 false（调用方决定要不要盖启动页） */
+    private fun showCached(): Boolean {
         val cached = Library.loadCache(this, cfg)
-        if (cached != null && cached.isNotEmpty()) renderData(cached) else showStatus("正在连接 NAS…")
+        if (cached != null && cached.isNotEmpty()) {
+            showingDemo = false
+            renderData(cached)
+            return true
+        }
+        showStatus("正在连接 NAS…")
+        return false
     }
 
     private fun refresh() {
         scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { Library.scan(cfg) } }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    Library.scan(cfg) { step ->
+                        runOnUiThread {
+                            subtitle.text = "扫描中：$step"
+                            if (splash.visibility == View.VISIBLE) splashStep.text = "扫描中：$step"
+                        }
+                    }
+                }
+            }
             result.onSuccess { list ->
+                // 演示模式下 sections 不是空的，以前用 sections.isEmpty() 判断，
+                // 失败时错误会被整个吞掉，界面永远停在「正在连接 NAS…」，家长一脸懵。
+                hideSplash()
+                val wasDemo = showingDemo
+                showingDemo = false
                 if (list.isEmpty()) {
-                    if (sections.isEmpty()) {
+                    if (sections.isEmpty() || wasDemo) {
                         showEmpty("NAS 里还没有视频", "把英语视频放进 ${cfg.rootPath} 就行")
                     }
                     return@onSuccess
@@ -887,7 +1020,8 @@ class MainActivity : Activity() {
                 Library.saveCache(this@MainActivity, cfg, list)
                 renderData(list)
             }.onFailure { e ->
-                if (sections.isEmpty()) {
+                hideSplash()
+                if (sections.isEmpty() || showingDemo) {
                     showEmpty("连不上 NAS", e.message ?: "检查电视和 NAS 是否在同一个 WiFi")
                 }
             }
@@ -896,8 +1030,25 @@ class MainActivity : Activity() {
 
     private fun renderData(list: List<Section>) {
         sections = list
-        expanded = null
+
+        // 刷新（换配置 / 首次扫描 / 缓存回填）时不要把人从打开的系列里弹出去：
+        // 按标题把 expanded 重新绑到这次扫出来的 Section 上，目录真没了才退回系列列表。
+        val openTitle = expanded?.title
+        val openEpisode = focusedEpisode
+        expanded = openTitle?.let { t -> list.firstOrNull { it.title == t } }
+        if (openTitle != null) {
+            if (expanded != null) {
+                pendingEpisodeFocus = openEpisode
+            } else {
+                pendingSeriesFocus = expandedFrom
+                focusedEpisode = -1
+            }
+        }
+
         seriesOf = list.flatMap { sec -> sec.videos.map { it.url to sec.title } }.toMap()
+        coverUrlFor = list.mapNotNull { sec ->
+            sec.videos.firstOrNull()?.let { sec.title to it.url }
+        }.toMap()
         val flat = list.flatMap { it.videos }
         subtitle.text = "${list.size} 个目录 · ${flat.size} 集"
         renderWatch(flat.shuffled().take(if (compact) 30 else 40))
@@ -906,6 +1057,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderDemo() {
+        showingDemo = true
         runCatching {
             renderData(listOf(Demo.section(this)))
             subtitle.text = if (compact) "演示模式 · 右上角「家长」配置" else "演示模式 · 点右上角「家长」填 NAS 地址"

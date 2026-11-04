@@ -158,16 +158,22 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
                 if (i >= 0) map[dec(pair.substring(0, i))] = dec(pair.substring(i + 1))
             }
         }
-        val host = (map["host"] ?: "").trim()
-            .removePrefix("http://").removePrefix("https://")
-            .substringBefore("/")
-        val portNum = map["port"]?.trim()?.toIntOrNull() ?: 5005
-        val root = (map["root"] ?: "/").trim().let { if (it.startsWith("/")) it else "/$it" }
+        // 拆地址的活统一交给 NasInput：整段粘贴（含协议/端口/路径）也能认。
+        val addr = NasInput.parse(
+            rawInput = map["host"] ?: "",
+            fallbackScheme = map["scheme"] ?: "http",
+            fallbackPort = map["port"]?.trim()?.toIntOrNull()
+        )
+        val formRoot = (map["root"] ?: "").trim()
+        // 粘的地址里带了路径就听它的，否则用表单里填的根路径
+        val root = (if (addr.pastedUrl && addr.path.isNotBlank()) addr.path else formRoot).let {
+            if (it.isBlank()) "/" else if (it.startsWith("/")) it else "/$it"
+        }
         return NasConfig(
-            host = host,
-            port = portNum,
-            scheme = "http",
-            rootPath = root.ifBlank { "/" },
+            host = addr.host,
+            port = addr.port,
+            scheme = addr.scheme,
+            rootPath = root,
             user = (map["user"] ?: "").trim(),
             pass = (map["pass"] ?: "").trim(),
             title = (map["title"] ?: "").trim().ifBlank { "英语时间" },
@@ -219,9 +225,10 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
   .lead{margin:0 0 22px;color:var(--ink2);font-size:14px;line-height:1.65}
   .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px 18px 6px;margin-bottom:14px}
   label{display:block;font-size:13px;color:var(--ink2);margin:0 0 6px}
-  input{width:100%;padding:13px 14px;font-size:16px;border-radius:12px;border:1.5px solid var(--line);
+  input,select{width:100%;padding:13px 14px;font-size:16px;border-radius:12px;border:1.5px solid var(--line);
         background:#fff;color:var(--ink);margin-bottom:14px;font-family:inherit}
-  input:focus{outline:none;border-color:var(--coral)}
+  select{appearance:none;-webkit-appearance:none}
+  input:focus,select:focus{outline:none;border-color:var(--coral)}
   .row{display:flex;gap:10px}
   .row>div{flex:1}
   .row>div.narrow{flex:0 0 104px}
@@ -239,8 +246,15 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
 <form id="f" onsubmit="return false">
   <div class="card">
     <div class="row">
-      <div><label>NAS 地址</label>
-        <input name="host" inputmode="decimal" placeholder="192.168.1.10" value="${esc(cfg.host)}"></div>
+      <div class="narrow"><label>协议</label>
+        <select name="scheme">
+          <option value="http"${if (cfg.scheme == "https") "" else " selected"}>http</option>
+          <option value="https"${if (cfg.scheme == "https") " selected" else ""}>https</option>
+        </select></div>
+      <div><label>NAS 地址（可以整段粘进来）</label>
+        <input name="host" inputmode="url" autocomplete="off" spellcheck="false"
+               autocapitalize="off" autocorrect="off"
+               placeholder="192.168.1.10 或 https://dav.example.com:443" value="${esc(cfg.host)}"></div>
       <div class="narrow"><label>端口</label>
         <input name="port" inputmode="numeric" placeholder="5005" value="$port"></div>
     </div>
@@ -264,8 +278,10 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
   <div id="msg"></div>
 </form>
 
-<p class="note">端口看你的 NAS：群晖 WebDAV 默认 5005，威联通 5005，
+<p class="note">端口看你的 NAS：fnOS / 群晖 / 威联通常见 5005，
 极空间在「系统设置 → 文件共享 → WebDAV」里能看到。<br>
+整段地址直接粘进「NAS 地址」也行，比如 <b>https://dav.example.com:443</b>，
+协议和端口会自动认出来（走 https 需要证书能被系统信任，自签证书不行）。<br>
 路径填视频所在的文件夹；视频和同名 .jpg 放一起就会有缩略图。</p>
 
 <script>
