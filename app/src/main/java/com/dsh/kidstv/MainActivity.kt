@@ -18,13 +18,27 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.annotation.OptIn
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Credentials
 
+@OptIn(UnstableApi::class)
 class MainActivity : Activity() {
 
     private lateinit var cfg: NasConfig
@@ -38,11 +52,9 @@ class MainActivity : Activity() {
     private lateinit var booksHost: LinearLayout
     private lateinit var watchList: LinearLayout
     private lateinit var allHost: LinearLayout
-    private lateinit var watchCoverBox: FrameLayout
-    private lateinit var watchCover: ImageView
-    private lateinit var watchCoverLetter: TextView
-    private lateinit var watchSeries: TextView
-    private lateinit var watchEpisode: TextView
+    private lateinit var previewBox: FrameLayout
+    private lateinit var previewSeries: TextView
+    private lateinit var previewEpisode: TextView
     private lateinit var subtitle: TextView
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -58,6 +70,11 @@ class MainActivity : Activity() {
     private var seriesOf: Map<String, String> = emptyMap()
     /** 从哪个系列点进去的，返回时把焦点放回去 */
     private var expandedFrom: Int = 0
+
+    private var previewPlayer: ExoPlayer? = null
+    private var previewView: PlayerView? = null
+    private var previewJob: Job? = null
+    private var currentPreview: String? = null
     private var pendingSeriesFocus: Int = -1
 
     /** 窄屏（手机竖屏）紧凑排版；电视上仍是 10 尺大字 */
@@ -89,6 +106,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         hideSystemUi()
+        if (tab == 0 && currentPreview != null) previewPlayer?.play()
         val now = Prefs.load(this)
         if (now.ready && now.cacheKey != cfg.cacheKey) {
             cfg = now
@@ -99,8 +117,16 @@ class MainActivity : Activity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        previewPlayer?.pause()
+    }
+
     override fun onDestroy() {
         scope.cancel()
+        previewView?.player = null
+        previewPlayer?.release()
+        previewPlayer = null
         super.onDestroy()
     }
 
@@ -245,6 +271,7 @@ class MainActivity : Activity() {
         pageAll.visibility = if (index == 1) View.VISIBLE else View.GONE
         pageBooks.visibility = if (index == 2) View.VISIBLE else View.GONE
         // 焦点留在 tab 上：左右键换 tab，OK 选中，按下键进内容区
+        if (index == 0) previewPlayer?.play() else previewPlayer?.pause()
         if (index == 2) loadBooks()
     }
 
@@ -303,14 +330,13 @@ class MainActivity : Activity() {
         }
         scroller.addView(watchList, MATCH_PARENT, WRAP_CONTENT)
 
-        // 右侧：左边大封面，右边上面剧名、下面集名
-        val detail = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        // 右边一大块：当前选中剧集的实时预览
+        val right = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(if (compact) 4 else 20), 0, 0, 0)
         }
 
-        watchCoverBox = object : FrameLayout(this) {
+        previewBox = object : FrameLayout(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec)
                 val w = MeasureSpec.getSize(widthMeasureSpec)
@@ -320,45 +346,36 @@ class MainActivity : Activity() {
             background = shape(Palette.ink, dp(if (compact) 12 else 22).toFloat())
             clipToOutline = true
         }
-        watchCoverLetter = label("", if (compact) 44 else 78, 0x44FFFFFF, display = true).apply {
-            gravity = Gravity.CENTER
-        }
-        watchCoverBox.addView(watchCoverLetter, MATCH_PARENT, MATCH_PARENT)
-        watchCover = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-        watchCoverBox.addView(watchCover, MATCH_PARENT, MATCH_PARENT)
+        right.addView(previewBox, MATCH_PARENT, WRAP_CONTENT)
 
-        val names = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(if (compact) 14 else 30), dp(if (compact) 2 else 6), 0, dp(if (compact) 2 else 6))
-        }
-        watchSeries = label("", if (compact) 16 else 32, Palette.ink, display = true).apply {
-            maxLines = 2
+        previewSeries = label("", if (compact) 18 else 30, Palette.ink, display = true).apply {
+            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(if (compact) 8 else 16), 0, 0)
         }
-        names.addView(watchSeries)
-        names.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
-        watchEpisode = label("", if (compact) 13 else 22, Palette.ink2).apply {
-            maxLines = 2
+        right.addView(previewSeries)
+
+        previewEpisode = label("", if (compact) 12 else 17, Palette.ink2).apply {
+            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(4), 0, 0)
         }
-        names.addView(watchEpisode)
-        names.addView(
+        right.addView(previewEpisode)
+
+        right.addView(
             label("按 OK 全屏播放", if (compact) 10 else 13, Palette.ink3).apply {
                 setPadding(0, dp(if (compact) 6 else 10), 0, 0)
             }
         )
 
-        detail.addView(watchCoverBox, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1.15f))
-        detail.addView(names, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
-
         if (compact) {
-            // 竖屏：详情在上、列表在下
-            row.addView(detail, MATCH_PARENT, WRAP_CONTENT)
+            // 竖屏：预览在上、列表在下
+            row.addView(right, MATCH_PARENT, WRAP_CONTENT)
             row.addView(scroller, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         } else {
-            // 电视：左列表、右详情
-            row.addView(scroller, LinearLayout.LayoutParams(dp(330), MATCH_PARENT))
-            row.addView(detail, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
+            // 电视：左列表、右预览
+            row.addView(scroller, LinearLayout.LayoutParams(dp(340), MATCH_PARENT))
+            row.addView(right, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
         }
         return row
     }
@@ -373,10 +390,11 @@ class MainActivity : Activity() {
         list.forEachIndexed { i, v -> watchList.addView(watchRow(v, i)) }
         if (tab == 0) {
             watchList.post { watchList.getChildAt(0)?.requestFocus() }
-            list.firstOrNull()?.let { showDetail(it) }
+            list.firstOrNull()?.let { showPreview(it, force = true) }
         }
     }
 
+    /** 列表项：左边封面，右边上面剧名、下面集名 */
     private fun watchRow(v: Video, index: Int): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -391,7 +409,7 @@ class MainActivity : Activity() {
         lp.bottomMargin = dp(2)
         row.layoutParams = lp
 
-        val thumbW = dp(if (compact) 72 else 104)
+        val thumbW = dp(if (compact) 78 else 112)
         val thumbH = thumbW * 9 / 16
         val thumb = FrameLayout(this).apply {
             background = shape(Palette.cover(index), dp(8).toFloat())
@@ -417,12 +435,23 @@ class MainActivity : Activity() {
         }
         row.addView(thumb, thumbW, thumbH)
 
-        val title = label(v.title, if (compact) 12 else 15, Palette.ink2).apply {
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(10), 0, 0, 0)
+        val texts = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
         }
-        row.addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val seriesName = seriesOf[v.url].orEmpty().ifBlank { "随心看" }
+        val seriesLabel = label(seriesName, if (compact) 12 else 16, Palette.ink2, display = true).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        val episodeLabel = label(v.title, if (compact) 10 else 13, Palette.ink3).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(3), 0, 0)
+        }
+        texts.addView(seriesLabel)
+        texts.addView(episodeLabel)
+        row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
         row.setOnFocusChangeListener { _, has ->
             row.background = shape(
@@ -431,34 +460,63 @@ class MainActivity : Activity() {
                 if (has) dp(3) else 0,
                 Palette.ink
             )
-            title.setTextColor(if (has) Palette.ink else Palette.ink2)
-            if (has) showDetail(v)
+            seriesLabel.setTextColor(if (has) Palette.ink else Palette.ink2)
+            episodeLabel.setTextColor(if (has) Palette.ink2 else Palette.ink3)
+            if (has) showPreview(v)
         }
         row.setOnClickListener { playList(shuffled, index) }
         return row
     }
 
-    private fun showDetail(v: Video) {
-        val series = seriesOf[v.url].orEmpty()
-        watchSeries.text = series.ifBlank { "随心看" }
-        watchEpisode.text = v.title
-        watchCoverLetter.text = (series.ifBlank { v.title }).take(1)
-        watchCoverBox.background = shape(
-            Palette.cover(series.hashCode()), dp(if (compact) 12 else 22).toFloat()
-        )
-
-        val url = v.thumb
-        watchCover.tag = url
-        watchCover.setImageDrawable(null)
-        if (url == null) return
-        val cached = Thumbs.cached(url)
-        if (cached != null) {
-            watchCover.setImageBitmap(cached)
-        } else {
-            Thumbs.load(url, cfg.user, cfg.pass, dp(420), dp(236)) { bmp ->
-                if (bmp != null && watchCover.tag == url) watchCover.setImageBitmap(bmp)
-            }
+    /** 焦点落到哪一行，右边就播哪一集（静音、循环、260ms 防抖） */
+    private fun showPreview(v: Video, force: Boolean = false) {
+        previewSeries.text = seriesOf[v.url].orEmpty().ifBlank { "随心看" }
+        previewEpisode.text = v.title
+        if (!force && currentPreview == v.url) return
+        currentPreview = v.url
+        previewJob?.cancel()
+        previewJob = scope.launch {
+            delay(if (force) 0L else 260L)
+            val p = ensurePreviewPlayer()
+            p.setMediaItem(MediaItem.fromUri(v.url))
+            p.prepare()
+            p.play()
         }
+    }
+
+    private fun ensurePreviewPlayer(): ExoPlayer {
+        previewPlayer?.let { return it }
+        val http = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(authHeaders())
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15000)
+            .setReadTimeoutMs(30000)
+        val base = DefaultDataSource.Factory(this, http)
+        val p = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(base))
+            .build()
+        p.volume = 0f
+        p.repeatMode = Player.REPEAT_MODE_ONE
+        p.playWhenReady = true
+
+        val pv = PlayerView(this).apply {
+            useController = false
+            setShutterBackgroundColor(Palette.ink)
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            player = p
+        }
+        previewView = pv
+        previewBox.addView(pv, MATCH_PARENT, MATCH_PARENT)
+        previewPlayer = p
+        return p
+    }
+
+    private fun authHeaders(): Map<String, String> {
+        val map = HashMap<String, String>()
+        if (cfg.user.isNotBlank()) {
+            map["Authorization"] = Credentials.basic(cfg.user, cfg.pass, Charsets.UTF_8)
+        }
+        return map
     }
 
     // ---------------- Tab 2：全部目录 ----------------
