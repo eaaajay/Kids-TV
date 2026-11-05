@@ -61,7 +61,9 @@ object Library {
         // 以前只下钻一层，像 /视频资源/儿童视频/小猪佩奇第一部/ 这种四层结构
         // 会整个扫不到，界面只会说"NAS 里还没有视频"。
         val queue = ArrayDeque<Pair<DavEntry, Int>>()
-        root.filter { it.isDir }.sortedWith(natural).forEach { queue.addLast(it to 1) }
+        // 跳过隐藏目录（.ssh / .config / .git…）：NAS 根目录下这类东西不少，
+        // 扫它们既没有视频，又在慢速中继上白花几十次请求。
+        root.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(natural).forEach { queue.addLast(it to 1) }
         val visited = HashSet<String>()
         var budget = MAX_REQUESTS
 
@@ -70,18 +72,36 @@ object Library {
             if (!visited.add(dir.href)) continue
             budget--
             onStep(cleanTitle(dir.name))
-            val children = runCatching { dav.propfind(dir.href, 1) }.getOrNull() ?: continue
+            // 中继偶尔会 401/超时；以前失败就跳过，结果整个系列在界面上凭空消失。
+            // 给三次机会（退避 300/600/900ms），真失败才跳过并记日志。
+            var children: List<DavEntry>? = null
+            var lastError: Throwable? = null
+            for (attempt in 0 until 3) {
+                try {
+                    children = dav.propfind(dir.href, 1)
+                    break
+                } catch (e: Exception) {
+                    lastError = e
+                    Thread.sleep(300L * (attempt + 1))
+                }
+            }
+            val kids = children
+            if (kids == null) {
+                android.util.Log.w("Library", "跳过 ${dir.name}：${lastError?.message}")
+                continue
+            }
 
-            val vids = children.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
+            val vids = kids.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
             if (vids.isNotEmpty()) {
-                val art = artMap(children)
+                val art = artMap(kids)
                 val subs = subMap(children)
                 sections += Section(cleanTitle(dir.name), vids.map { toVideo(dav, it, art, subs) })
                 // 这个目录自己就有视频，就不再往里钻，免得父子重复
                 continue
             }
             if (depth >= MAX_DEPTH) continue
-            children.filter { it.isDir }.sortedWith(natural).forEach { queue.addLast(it to depth + 1) }
+            kids.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(natural)
+                .forEach { queue.addLast(it to depth + 1) }
         }
 
         return sections

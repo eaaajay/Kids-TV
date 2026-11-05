@@ -40,7 +40,7 @@ object Books {
 
         // 和视频一样要能往下钻：绘本也常常放在好几层目录里
         val queue = ArrayDeque<Pair<DavEntry, Int>>()
-        root.filter { it.isDir }.sortedWith(order).forEach { queue.addLast(it to 1) }
+        root.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(order).forEach { queue.addLast(it to 1) }
         var budget = 60
         while (queue.isNotEmpty() && budget > 0 && out.size < 300) {
             val (dir, depth) = queue.removeFirst()
@@ -48,7 +48,8 @@ object Books {
             val children = runCatching { dav.propfind(dir.href, 1) }.getOrNull() ?: continue
             collect(dav, children, out)
             if (depth >= 4) continue
-            children.filter { it.isDir }.sortedWith(order).forEach { queue.addLast(it to depth + 1) }
+            children.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(order)
+                .forEach { queue.addLast(it to depth + 1) }
         }
     }
 

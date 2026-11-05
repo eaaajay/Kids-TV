@@ -21,7 +21,8 @@ import java.util.concurrent.TimeUnit
 object Thumbs {
 
     private val main = Handler(Looper.getMainLooper())
-    private val pool = Executors.newFixedThreadPool(3)
+    // 中继对并发敏感：3 条线程一起要图时偶尔会 401/超时，降到 2 条更稳
+    private val pool = Executors.newFixedThreadPool(2)
     /** 正在下载的 URL -> 等这张图的所有回调。同一个 URL 只发一次请求，但每个调用方都要回。 */
     private val inflight = HashMap<String, MutableList<(Bitmap?) -> Unit>>()
     private val lock = Any()
@@ -64,18 +65,10 @@ object Thumbs {
                     bmp = decodeFile(file, reqW, reqH)
                 }
                 if (bmp == null) {
-                    val req = Request.Builder()
-                        .url(url)
-                        .header("Authorization", Credentials.basic(user, pass, Charsets.UTF_8))
-                        .build()
-                    client.newCall(req).execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            val bytes = resp.body?.bytes()
-                            if (bytes != null && bytes.isNotEmpty()) {
-                                bmp = decodeBytes(bytes, reqW, reqH)
-                                if (bmp != null) runCatching { file.writeBytes(bytes) }
-                            }
-                        }
+                    val bytes = download(url, user, pass)
+                    if (bytes != null) {
+                        bmp = decodeBytes(bytes, reqW, reqH)
+                        if (bmp != null) runCatching { file.writeBytes(bytes) }
                     }
                 }
             } catch (_: Exception) {
@@ -107,6 +100,27 @@ object Thumbs {
                 }
             }
         }
+
+    /** 下载图片；中继会偶发 401/超时，给它三次机会，别让卡片停在色块上 */
+    private fun download(url: String, user: String, pass: String): ByteArray? {
+        repeat(3) { attempt ->
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .header("Authorization", Credentials.basic(user, pass, Charsets.UTF_8))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val bytes = resp.body?.bytes()
+                        if (bytes != null && bytes.isNotEmpty()) return bytes
+                    }
+                }
+            } catch (_: Exception) {
+            }
+            Thread.sleep(250L * (attempt + 1))
+        }
+        return null
+    }
 
     private fun decodeFile(f: File, w: Int, h: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
