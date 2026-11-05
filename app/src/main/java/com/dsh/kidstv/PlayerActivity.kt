@@ -54,7 +54,15 @@ class PlayerActivity : Activity() {
     private lateinit var banner: LinearLayout
     private lateinit var statsView: TextView
     private lateinit var bufferBar: ProgressBar
-    private val speedChips = ArrayList<TextView>()
+    /** 横幅里的两个按钮：0 = 播放/暂停，1 = 速度 */
+    private lateinit var playBtn: TextView
+    private lateinit var speedBtn: TextView
+    private val speedMenuRows = ArrayList<TextView>()
+    private lateinit var speedMenu: LinearLayout
+    /** -1 = 横幅里没有焦点（此时 OK 直接播放暂停） */
+    private var focusOn = -1
+    private var menuOpen = false
+    private var menuSel = 1
 
     private var urls = ArrayList<String>()
     private var startIndex = 0
@@ -91,7 +99,7 @@ class PlayerActivity : Activity() {
 
         setContentView(buildUi())
         startPlayback()
-        paintSpeedChips()
+        paintBannerButtons()
         showBanner()
         ui.post(ticker)
     }
@@ -151,6 +159,11 @@ class PlayerActivity : Activity() {
             }
         )
 
+        root.addView(
+            buildSpeedMenu(),
+            FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER)
+        )
+
         // 手机/触摸屏：点一下就是播放暂停，同时把横幅叫回来
         root.isClickable = true
         root.setOnClickListener { togglePlay() }
@@ -164,7 +177,7 @@ class PlayerActivity : Activity() {
             background = shape(0xD9101316.toInt(), dp(16).toFloat(), dp(1), 0x33FFF7ED)
         }
 
-        // 一行放完：左边缓存进度和下载速度，右边倍速
+        // 一行放完：左边缓存/速度，右边两个按钮（播放暂停、倍速）
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -172,21 +185,22 @@ class PlayerActivity : Activity() {
         statsView = label("", 13, 0xCCFFF7ED.toInt())
         row.addView(statsView, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        speeds.indices.forEach { i ->
-            val chip = label(speedLabels[i], 13, 0xCCFFF7ED.toInt(), display = true).apply {
-                setPadding(dp(12), dp(4), dp(12), dp(4))
-                isClickable = true
-                setOnClickListener {
-                    speedIndex = i
-                    applySpeed()
-                }
-            }
-            speedChips += chip
-            row.addView(
-                chip,
-                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(6) }
-            )
+        playBtn = label("⏸", 14, 0xCCFFF7ED.toInt(), display = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            isClickable = true
+            setOnClickListener { actPlay() }
         }
+        row.addView(playBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(10) })
+
+        speedBtn = label("速度 1×", 13, 0xCCFFF7ED.toInt(), display = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            isClickable = true
+            setOnClickListener { openSpeedMenu() }
+        }
+        row.addView(speedBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(8) })
+
         banner.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         bufferBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -202,6 +216,100 @@ class PlayerActivity : Activity() {
         return banner
     }
 
+    private fun buildSpeedMenu(): View {
+        speedMenu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(26), dp(16), dp(26), dp(16))
+            background = shape(0xF2101316.toInt(), dp(20).toFloat(), dp(2), 0x44FFF7ED)
+            visibility = View.GONE
+        }
+        speedMenu.addView(
+            label("播放速度", 13, 0x99FFF7ED.toInt()).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, dp(6))
+            },
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        )
+        speeds.indices.forEach { i ->
+            val row = label(speedLabels[i] + "×", 20, 0xCCFFF7ED.toInt(), display = true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(36), dp(8), dp(36), dp(8))
+                isClickable = true
+                setOnClickListener {
+                    menuSel = i
+                    applyMenuSpeed()
+                }
+            }
+            speedMenuRows += row
+            speedMenu.addView(
+                row,
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(4) }
+            )
+        }
+        return speedMenu
+    }
+
+    private fun openSpeedMenu() {
+        menuOpen = true
+        menuSel = speedIndex
+        speedMenu.visibility = View.VISIBLE
+        speedMenu.alpha = 0f
+        speedMenu.animate().alpha(1f).setDuration(120).start()
+        paintSpeedMenu()
+        ui.removeCallbacks(hideBanner)
+    }
+
+    private fun closeSpeedMenu() {
+        menuOpen = false
+        speedMenu.visibility = View.GONE
+        focusOn = -1
+        paintBannerButtons()
+        showBanner()
+    }
+
+    private fun applyMenuSpeed() {
+        speedIndex = menuSel
+        applySpeed()
+        closeSpeedMenu()
+    }
+
+    private fun paintSpeedMenu() {
+        speedMenuRows.forEachIndexed { i, row ->
+            val on = i == menuSel
+            row.setTextColor(if (on) Palette.ink else 0xCCFFF7ED.toInt())
+            row.background = shape(if (on) Palette.paper else 0x00000000, dp(12).toFloat())
+        }
+    }
+
+    /** 上一集 / 下一集：电视遥控器上下键 */
+    private fun prevEpisode() {
+        val p = player ?: return
+        if (p.hasPreviousMediaItem()) {
+            p.seekToPreviousMediaItem()
+            p.play()
+        } else {
+            toast("已经是第一集")
+        }
+        showBanner()
+    }
+
+    private fun nextEpisode() {
+        val p = player ?: return
+        if (p.hasNextMediaItem()) {
+            p.seekToNextMediaItem()
+            p.play()
+        } else {
+            toast("已经是最后一集")
+        }
+        showBanner()
+    }
+
+    private fun actPlay() {
+        togglePlay()
+        focusOn = -1
+        paintBannerButtons()
+    }
+
     // ---------------- 横幅显隐 ----------------
 
     private fun showBanner() {
@@ -210,11 +318,11 @@ class PlayerActivity : Activity() {
         banner.animate().alpha(1f).setDuration(150).start()
         ui.removeCallbacks(hideBanner)
         // 暂停时别自动消失，否则屏幕上什么信息都没有
-        if (player?.playWhenReady != false) ui.postDelayed(hideBanner, 3000)
+        if (player?.playWhenReady != false && focusOn == -1 && !menuOpen) ui.postDelayed(hideBanner, 3000)
     }
 
     private fun fadeOutBanner() {
-        if (player?.playWhenReady == false) return
+        if (player?.playWhenReady == false || focusOn != -1 || menuOpen) return
         banner.animate().alpha(0f).setDuration(280)
             .withEndAction { if (banner.alpha < 0.05f) banner.visibility = View.GONE }
             .start()
@@ -339,30 +447,34 @@ class PlayerActivity : Activity() {
     private fun updatePauseIcon() {
         val paused = player?.playWhenReady == false
         pauseIcon.visibility = if (paused) View.VISIBLE else View.GONE
+        paintBannerButtons()
         if (paused) ui.removeCallbacks(hideBanner)
     }
 
     // ---------------- 倍速 ----------------
 
-    private fun changeSpeed(delta: Int) {
-        speedIndex = ((speedIndex + delta) % speeds.size + speeds.size) % speeds.size
-        applySpeed()
-    }
-
     private fun applySpeed() {
         player?.playbackParameters = PlaybackParameters(speeds[speedIndex], 1f)
         Prefs.setSpeedIndex(this, speedIndex)
-        paintSpeedChips()
+        paintBannerButtons()
         updateStats()
         showBanner()
     }
 
-    private fun paintSpeedChips() {
-        speedChips.forEachIndexed { i, chip ->
-            val on = i == speedIndex
-            chip.setTextColor(if (on) Palette.ink else 0xCCFFF7ED.toInt())
-            chip.background = shape(if (on) Palette.paper else 0x22FFFFFF, dp(999).toFloat())
-        }
+    private fun paintBannerButtons() {
+        val paused = player?.playWhenReady == false
+        playBtn.text = if (paused) "▶" else "⏸"
+        playBtn.setTextColor(if (focusOn == 0) Palette.ink else 0xCCFFF7ED.toInt())
+        playBtn.background = shape(
+            if (focusOn == 0) Palette.paper else 0x22FFFFFF,
+            dp(999).toFloat()
+        )
+        speedBtn.text = "速度 ${speedLabels[speedIndex]}×"
+        speedBtn.setTextColor(if (focusOn == 1) Palette.ink else 0xCCFFF7ED.toInt())
+        speedBtn.background = shape(
+            if (focusOn == 1) Palette.paper else 0x22FFFFFF,
+            dp(999).toFloat()
+        )
     }
 
     // ---------------- 缓存 / 速度 ----------------
@@ -442,35 +554,89 @@ class PlayerActivity : Activity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
-            event.keyCode != KeyEvent.KEYCODE_BACK
-        ) {
+        if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
+
+        // 速度弹窗打开时，方向键和 OK 都归它
+        if (menuOpen) {
             when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    menuSel = (menuSel - 1 + speeds.size) % speeds.size
+                    paintSpeedMenu()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    menuSel = (menuSel + 1) % speeds.size
+                    paintSpeedMenu()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                    applyMenuSpeed()
+                    return true
+                }
+                KeyEvent.KEYCODE_BACK -> {
+                    closeSpeedMenu()
+                    return true
+                }
+            }
+            return true
+        }
+
+        if (event.keyCode != KeyEvent.KEYCODE_BACK && event.repeatCount == 0) {
+            when (event.keyCode) {
+                // 上下 = 上一集 / 下一集
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    prevEpisode()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    nextEpisode()
+                    return true
+                }
+                // 左右 = 在「播放/暂停」和「速度」两个按钮之间移焦点
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    changeSpeed(-1)
+                    moveFocus(-1)
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    changeSpeed(1)
+                    moveFocus(1)
                     return true
                 }
                 KeyEvent.KEYCODE_MENU,
                 KeyEvent.KEYCODE_CAPTIONS -> {
                     toggleSubs()
+                    showBanner()
                     return true
                 }
+                // OK：焦点在「速度」上就弹菜单，否则播放/暂停
                 KeyEvent.KEYCODE_DPAD_CENTER,
                 KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_NUMPAD_ENTER,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                 KeyEvent.KEYCODE_HEADSETHOOK -> {
-                    togglePlay()
+                    if (focusOn == 1) openSpeedMenu() else actPlay()
                     return true
                 }
             }
             showBanner()
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    /** 左右键在横幅的两个按钮之间移动焦点；一有焦点就暂停自动收起 */
+    private fun moveFocus(delta: Int) {
+        if (banner.visibility != View.VISIBLE) {
+            banner.alpha = 1f
+            banner.visibility = View.VISIBLE
+        }
+        focusOn = if (focusOn == -1) {
+            if (delta > 0) 1 else 0
+        } else {
+            (focusOn + delta).coerceIn(0, 1)
+        }
+        paintBannerButtons()
+        showBanner()
     }
 
     override fun onPause() {
