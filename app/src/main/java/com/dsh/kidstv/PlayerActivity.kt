@@ -57,6 +57,9 @@ class PlayerActivity : Activity() {
     /** 横幅里的两个按钮：0 = 播放/暂停，1 = 速度 */
     private lateinit var playBtn: TextView
     private lateinit var speedBtn: TextView
+    private lateinit var subsBtn: TextView
+    /** 已播放进度（叠在缓存进度上面） */
+    private lateinit var playedBar: ProgressBar
     private val speedMenuRows = ArrayList<TextView>()
     private lateinit var speedMenu: LinearLayout
     /** -1 = 横幅里没有焦点（此时 OK 直接播放暂停） */
@@ -177,19 +180,22 @@ class PlayerActivity : Activity() {
             background = shape(0xD9101316.toInt(), dp(16).toFloat(), dp(1), 0x33FFF7ED)
         }
 
-        // 一行放完：左边缓存/速度，右边两个按钮（播放暂停、倍速）
+        // 一行放完：左边时间/缓存/速度，右边三个按钮
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        statsView = label("", 13, 0xCCFFF7ED.toInt())
+        statsView = label("", 13, 0xCCFFF7ED.toInt()).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
         row.addView(statsView, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
         playBtn = label("⏸", 14, 0xCCFFF7ED.toInt(), display = true).apply {
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setPadding(dp(14), dp(4), dp(14), dp(4))
             isClickable = true
-            setOnClickListener { actPlay() }
+            setOnClickListener { if (player?.playWhenReady == false) resumeFromBar() else pauseToControlBar() }
         }
         row.addView(playBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(10) })
 
@@ -201,17 +207,35 @@ class PlayerActivity : Activity() {
         }
         row.addView(speedBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(8) })
 
+        subsBtn = label("字幕 开", 13, 0xCCFFF7ED.toInt(), display = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            isClickable = true
+            setOnClickListener { toggleSubs(); paintBannerButtons() }
+        }
+        row.addView(subsBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(8) })
+
         banner.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
+        // 两条细进度条叠在一起：浅色是已缓存，珊瑚色是已播放
+        val track = FrameLayout(this)
         bufferBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             progress = 0
-            progressTintList = ColorStateList.valueOf(Palette.coral)
-            progressBackgroundTintList = ColorStateList.valueOf(0x44FFFFFF)
+            progressTintList = ColorStateList.valueOf(0x59FFF7ED)
+            progressBackgroundTintList = ColorStateList.valueOf(0x22FFFFFF)
         }
+        track.addView(bufferBar, FrameLayout.LayoutParams(MATCH_PARENT, dp(4), Gravity.CENTER_VERTICAL))
+        playedBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            progressTintList = ColorStateList.valueOf(Palette.coral)
+            progressBackgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+        }
+        track.addView(playedBar, FrameLayout.LayoutParams(MATCH_PARENT, dp(4), Gravity.CENTER_VERTICAL))
         banner.addView(
-            bufferBar,
-            LinearLayout.LayoutParams(MATCH_PARENT, dp(3)).apply { topMargin = dp(8) }
+            track,
+            LinearLayout.LayoutParams(MATCH_PARENT, dp(4)).apply { topMargin = dp(8) }
         )
         return banner
     }
@@ -262,7 +286,8 @@ class PlayerActivity : Activity() {
     private fun closeSpeedMenu() {
         menuOpen = false
         speedMenu.visibility = View.GONE
-        focusOn = -1
+        // 暂停时把焦点还回「速度」按钮，播放时收回焦点让横幅能自动收起
+        focusOn = if (player?.playWhenReady == false) 1 else -1
         paintBannerButtons()
         showBanner()
     }
@@ -282,32 +307,81 @@ class PlayerActivity : Activity() {
     }
 
     /** 上一集 / 下一集：电视遥控器上下键 */
-    private fun prevEpisode() {
+    private fun prevEpisode(autoPlay: Boolean = false) {
         val p = player ?: return
         if (p.hasPreviousMediaItem()) {
             p.seekToPreviousMediaItem()
-            p.play()
+            if (autoPlay) {
+                p.play()
+                focusOn = -1
+                paintBannerButtons()
+            }
         } else {
             toast("已经是第一集")
         }
         showBanner()
     }
 
-    private fun nextEpisode() {
+    private fun nextEpisode(autoPlay: Boolean = false) {
         val p = player ?: return
         if (p.hasNextMediaItem()) {
             p.seekToNextMediaItem()
-            p.play()
+            if (autoPlay) {
+                p.play()
+                focusOn = -1
+                paintBannerButtons()
+            }
         } else {
             toast("已经是最后一集")
         }
         showBanner()
     }
 
-    private fun actPlay() {
-        togglePlay()
+    private fun pauseToControlBar() {
+        val p = player ?: return
+        p.pause()
+        focusOn = 0
+        paintBannerButtons()
+        showBanner()
+    }
+
+    private fun resumeFromBar() {
+        player?.play()
         focusOn = -1
         paintBannerButtons()
+        showBanner()
+    }
+
+    /** 控制条模式下 OK：执行当前聚焦的按钮 */
+    private fun activateFocused() {
+        when (focusOn) {
+            1 -> openSpeedMenu()
+            2 -> {
+                toggleSubs()
+                paintBannerButtons()
+            }
+            else -> resumeFromBar()
+        }
+    }
+
+    /** 左右键调进度（播放中） */
+    private fun seekBy(deltaMs: Long) {
+        val p = player ?: return
+        val dur = p.duration
+        var target = (p.currentPosition + deltaMs).coerceAtLeast(0L)
+        if (dur > 0 && dur != C.TIME_UNSET) target = target.coerceAtMost(dur)
+        p.seekTo(target)
+        updateStats()
+        showBanner()
+    }
+
+    private fun fmtTime(ms: Long): String {
+        if (ms <= 0) return "00:00"
+        val t = ms / 1000
+        val h = t / 3600
+        val m = (t % 3600) / 60
+        val sec = t % 60
+        return if (h > 0) String.format("%d:%02d:%02d", h, m, sec) else String.format("%02d:%02d", m, sec)
     }
 
     // ---------------- 横幅显隐 ----------------
@@ -463,18 +537,14 @@ class PlayerActivity : Activity() {
 
     private fun paintBannerButtons() {
         val paused = player?.playWhenReady == false
-        playBtn.text = if (paused) "▶" else "⏸"
-        playBtn.setTextColor(if (focusOn == 0) Palette.ink else 0xCCFFF7ED.toInt())
-        playBtn.background = shape(
-            if (focusOn == 0) Palette.paper else 0x22FFFFFF,
-            dp(999).toFloat()
-        )
+        playBtn.text = if (paused) "▶ 继续" else "⏸"
         speedBtn.text = "速度 ${speedLabels[speedIndex]}×"
-        speedBtn.setTextColor(if (focusOn == 1) Palette.ink else 0xCCFFF7ED.toInt())
-        speedBtn.background = shape(
-            if (focusOn == 1) Palette.paper else 0x22FFFFFF,
-            dp(999).toFloat()
-        )
+        subsBtn.text = if (subsOn) "字幕 开" else "字幕 关"
+        listOf(playBtn, speedBtn, subsBtn).forEachIndexed { i, b ->
+            val on = focusOn == i
+            b.setTextColor(if (on) Palette.ink else 0xCCFFF7ED.toInt())
+            b.background = shape(if (on) Palette.paper else 0x22FFFFFF, dp(999).toFloat())
+        }
     }
 
     // ---------------- 缓存 / 速度 ----------------
@@ -488,13 +558,17 @@ class PlayerActivity : Activity() {
 
         val dur = p.duration
         val buf = p.bufferedPosition
+        val pos = p.currentPosition
         if (dur > 0 && dur != C.TIME_UNSET) {
-            val pct = (buf.coerceAtMost(dur) * 100 / dur).toInt().coerceIn(0, 100)
-            bufferBar.progress = pct
-            statsView.text = "缓存 $pct% · $rate"
+            val bufPct = (buf.coerceAtMost(dur) * 100 / dur).toInt().coerceIn(0, 100)
+            val posPct = (pos.coerceAtMost(dur) * 100 / dur).toInt().coerceIn(0, 100)
+            bufferBar.progress = bufPct
+            playedBar.progress = posPct
+            statsView.text = "${fmtTime(pos)} / ${fmtTime(dur)} · 缓存 $bufPct% · $rate"
         } else {
             // 时长还没拿到（刚起播）就报已缓存多少
             bufferBar.progress = 0
+            playedBar.progress = 0
             statsView.text = "已缓存 ${human(bytes)} · $rate"
         }
     }
@@ -556,7 +630,7 @@ class PlayerActivity : Activity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
 
-        // 速度弹窗打开时，方向键和 OK 都归它
+        // 1) 速度弹窗打开时，方向键和 OK 都归它
         if (menuOpen) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP -> {
@@ -583,45 +657,56 @@ class PlayerActivity : Activity() {
             return true
         }
 
-        if (event.keyCode != KeyEvent.KEYCODE_BACK && event.repeatCount == 0) {
-            when (event.keyCode) {
-                // 上下 = 上一集 / 下一集
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    prevEpisode()
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    nextEpisode()
-                    return true
-                }
-                // 左右 = 在「播放/暂停」和「速度」两个按钮之间移焦点
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    moveFocus(-1)
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    moveFocus(1)
-                    return true
-                }
-                KeyEvent.KEYCODE_MENU,
-                KeyEvent.KEYCODE_CAPTIONS -> {
-                    toggleSubs()
-                    showBanner()
-                    return true
-                }
-                // OK：焦点在「速度」上就弹菜单，否则播放/暂停
-                KeyEvent.KEYCODE_DPAD_CENTER,
-                KeyEvent.KEYCODE_ENTER,
-                KeyEvent.KEYCODE_NUMPAD_ENTER,
-                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-                KeyEvent.KEYCODE_HEADSETHOOK -> {
-                    if (focusOn == 1) openSpeedMenu() else actPlay()
-                    return true
-                }
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event)
+
+        val playing = player?.playWhenReady != false
+        when (event.keyCode) {
+            // ---------- 上下：换集（两种模式都可以） ----------
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                if (event.repeatCount == 0) prevEpisode(autoPlay = !playing)
+                return true
             }
-            showBanner()
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (event.repeatCount == 0) nextEpisode(autoPlay = !playing)
+                return true
+            }
+            // ---------- 左右：播放时调进度，暂停时移焦点 ----------
+            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                if (playing) seekBy(-SEEK_STEP_MS) else if (event.repeatCount == 0) moveFocus(-1)
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                if (playing) seekBy(SEEK_STEP_MS) else if (event.repeatCount == 0) moveFocus(1)
+                return true
+            }
+            // ---------- OK：播放时暂停，暂停时执行当前按钮 ----------
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_HEADSETHOOK -> {
+                if (event.repeatCount == 0) {
+                    if (playing) pauseToControlBar() else activateFocused()
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_MENU,
+            KeyEvent.KEYCODE_CAPTIONS -> {
+                if (event.repeatCount == 0) {
+                    toggleSubs()
+                    paintBannerButtons()
+                    showBanner()
+                }
+                return true
+            }
         }
+        if (event.repeatCount == 0) showBanner()
         return super.dispatchKeyEvent(event)
+    }
+
+    private companion object {
+        /** 左右键每次快进/快退多少 */
+        const val SEEK_STEP_MS = 10_000L
     }
 
     /** 左右键在横幅的两个按钮之间移动焦点；一有焦点就暂停自动收起 */
@@ -633,7 +718,7 @@ class PlayerActivity : Activity() {
         focusOn = if (focusOn == -1) {
             if (delta > 0) 1 else 0
         } else {
-            (focusOn + delta).coerceIn(0, 1)
+            (focusOn + delta).coerceIn(0, 2)
         }
         paintBannerButtons()
         showBanner()
