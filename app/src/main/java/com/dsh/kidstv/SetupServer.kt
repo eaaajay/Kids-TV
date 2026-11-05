@@ -214,7 +214,7 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>夏夏看电视 · 家长设置</title>
+<title>夏夏爱学习 · 家长设置</title>
 <style>
   :root{--paper:#F7EDDC;--ink:#17324D;--ink2:#5B7186;--coral:#E85C43;--line:#E2D2B4;--card:#FFFBF4}
   *{box-sizing:border-box}
@@ -239,7 +239,7 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
   .note{font-size:12.5px;color:var(--ink2);line-height:1.7;margin:18px 4px 0}
 </style></head>
 <body>
-<h1>夏夏看电视</h1>
+<h1>夏夏爱学习</h1>
 <p class="lead">把 NAS 上的儿童英语视频接上电视。<br>
 支持 WebDAV：群晖、威联通、极空间、绿联、Alist 都行。</p>
 

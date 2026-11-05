@@ -105,7 +105,13 @@ class MainActivity : Activity() {
         setContentView(buildUi())
 
         if (cfg.ready) {
-            if (!showCached()) showSplash()
+            // 和 kidsbox 一样：每次冷启动都过一遍启动页。
+            // 但有缓存时不让人干等 —— 露个脸就淡出，扫描继续在后台跑。
+            val hadCache = showCached()
+            showSplash()
+            // 计时要从“启动页真的画出来”开始算，否则 onCreate 到首帧就过去了 1 秒，
+            // banner 等于没显示。先 post 等布局完成，再延时。
+            if (hadCache) splash.post { splash.postDelayed({ hideSplash() }, 700) }
             refresh()
         } else {
             renderDemo()
@@ -211,17 +217,23 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
         }
-        col.addView(label("夏夏看电视", if (compact) 26 else 40, Palette.ink, display = true).apply {
+        col.addView(label("夏夏爱学习", if (compact) 26 else 40, Palette.ink, display = true).apply {
             gravity = Gravity.CENTER
         })
+        // 圆角进度条：系统 ProgressBar 的轨道是直角的，套一层圆角容器裁一下
+        val track = FrameLayout(this).apply {
+            background = shape(Palette.paper2, dp(999).toFloat())
+            clipToOutline = true
+        }
         val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
             indeterminateTintList = ColorStateList.valueOf(Palette.coral)
-            progressBackgroundTintList = ColorStateList.valueOf(Palette.paper2)
+            progressBackgroundTintList = ColorStateList.valueOf(android.graphics.Color.TRANSPARENT)
         }
+        track.addView(bar, FrameLayout.LayoutParams(MATCH_PARENT, dp(if (compact) 5 else 6), Gravity.CENTER_VERTICAL))
         col.addView(
-            bar,
-            LinearLayout.LayoutParams(dp(if (compact) 200 else 420), dp(6)).apply { topMargin = dp(26) }
+            track,
+            LinearLayout.LayoutParams(dp(if (compact) 220 else 420), dp(if (compact) 5 else 6)).apply { topMargin = dp(26) }
         )
         splashStep = label("正在连接 NAS…", if (compact) 13 else 16, Palette.ink2).apply {
             gravity = Gravity.CENTER
@@ -265,7 +277,13 @@ class MainActivity : Activity() {
         }
 
         val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        brand.addView(label("夏夏看电视", if (compact) 16 else 21, Palette.ink, display = true))
+        // 名字比原来长一个字，窄屏会折行 —— 单行 + 省略
+        brand.addView(
+            label("夏夏爱学习", if (compact) 13 else 21, Palette.ink, display = true).apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }
+        )
         subtitle = label("", if (compact) 10 else 12, Palette.ink3).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
@@ -312,10 +330,10 @@ class MainActivity : Activity() {
     }
 
     private fun tabPill(text: String, index: Int): TextView {
-        val tv = label(text, if (compact) 12 else 17, Palette.ink2, display = true).apply {
+        val tv = label(text, if (compact) 11 else 17, Palette.ink2, display = true).apply {
             setPadding(
-                dp(if (compact) 11 else 20), dp(if (compact) 6 else 9),
-                dp(if (compact) 11 else 20), dp(if (compact) 6 else 9)
+                dp(if (compact) 9 else 20), dp(if (compact) 6 else 9),
+                dp(if (compact) 9 else 20), dp(if (compact) 6 else 9)
             )
             background = shape(Color.TRANSPARENT, dp(24).toFloat())
             isFocusable = true
@@ -435,27 +453,62 @@ class MainActivity : Activity() {
             background = shape(Palette.ink, dp(if (compact) 12 else 22).toFloat())
             clipToOutline = true
         }
+        previewBox.isClickable = true
+        previewBox.setOnClickListener { playFromPreview() }
         right.addView(previewBox, MATCH_PARENT, WRAP_CONTENT)
 
-        previewSeries = label("", if (compact) 18 else 30, Palette.ink, display = true).apply {
+        previewSeries = label("", if (compact) 18 else 28, Palette.ink, display = true).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             setPadding(0, dp(if (compact) 8 else 16), 0, 0)
         }
         right.addView(previewSeries)
 
-        previewEpisode = label("", if (compact) 12 else 17, Palette.ink2).apply {
+        previewEpisode = label("", if (compact) 12 else 15, Palette.ink2).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             setPadding(0, dp(4), 0, 0)
         }
         right.addView(previewEpisode)
 
-        right.addView(
-            label("按 OK 全屏播放", if (compact) 10 else 13, Palette.ink3).apply {
-                setPadding(0, dp(if (compact) 6 else 10), 0, 0)
+        // 底部一行：▶ 提示文字 …… 珊瑚色「全屏播放」胶囊（遥控器能聚焦）
+        val hintRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(if (compact) 8 else 12), 0, 0)
+        }
+        hintRow.addView(
+            label("▶", if (compact) 10 else 12, Palette.ink3).apply {
+                setPadding(0, 0, dp(6), 0)
             }
         )
+        hintRow.addView(
+            label("OK 全屏播放 · 预览静音", if (compact) 10 else 12, Palette.ink3).apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            },
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        )
+        val playPill = label("全屏播放", if (compact) 11 else 13, Palette.card, display = true).apply {
+            setPadding(dp(if (compact) 12 else 16), dp(if (compact) 6 else 8),
+                dp(if (compact) 12 else 16), dp(if (compact) 6 else 8))
+            background = shape(Palette.coral, dp(999).toFloat())
+            isFocusable = true
+            isClickable = true
+            noDefaultFocusRing()
+            setOnClickListener { playFromPreview() }
+            setOnFocusChangeListener { v, has ->
+                v.animate().scaleX(if (has) 1.06f else 1f).scaleY(if (has) 1.06f else 1f)
+                    .setDuration(120).start()
+                v.background = shape(if (has) Palette.ink else Palette.coral, dp(999).toFloat())
+                (v as TextView).setTextColor(if (has) Palette.paper else Palette.card)
+            }
+        }
+        hintRow.addView(playPill)
+        right.addView(hintRow)
+
+        // 预览区变窄时别把列表挤没：给预览一个最大宽度
+        right.minimumWidth = 0
 
         if (compact) {
             // 竖屏：预览在上、列表在下
@@ -476,7 +529,10 @@ class MainActivity : Activity() {
             watchList.addView(centered("这里还是空的", Palette.ink2, "去「视频目录」看看"))
             return
         }
+        watchRowBinds.clear()
+        selectedWatch = 0
         list.forEachIndexed { i, v -> watchList.addView(watchRow(v, i)) }
+        watchRowBinds.forEachIndexed { i, bind -> bind(i == selectedWatch) }
         if (tab == 0) {
             watchList.post { watchList.getChildAt(0)?.requestFocus() }
             list.firstOrNull()?.let { showPreview(it, force = true) }
@@ -498,8 +554,8 @@ class MainActivity : Activity() {
         lp.bottomMargin = dp(2)
         row.layoutParams = lp
 
-        val thumbW = dp(if (compact) 78 else 112)
-        val thumbH = thumbW * 9 / 16
+        val thumbW = dp(if (compact) 76 else 92)
+        val thumbH = dp(if (compact) 43 else 52)
         val thumb = FrameLayout(this).apply {
             background = shape(Palette.cover(index), dp(8).toFloat())
             clipToOutline = true
@@ -520,11 +576,11 @@ class MainActivity : Activity() {
             setPadding(dp(12), 0, 0, 0)
         }
         val seriesName = seriesOf[v.url].orEmpty().ifBlank { "随心看" }
-        val seriesLabel = label(seriesName, if (compact) 12 else 16, Palette.ink2, display = true).apply {
+        val seriesLabel = label(seriesName, if (compact) 12 else 15, Palette.ink2, display = true).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }
-        val episodeLabel = label(v.title, if (compact) 10 else 13, Palette.ink3).apply {
+        val episodeLabel = label(v.title, if (compact) 10 else 12, Palette.ink3).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             setPadding(0, dp(3), 0, 0)
@@ -533,23 +589,68 @@ class MainActivity : Activity() {
         texts.addView(episodeLabel)
         row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        row.setOnFocusChangeListener { _, has ->
+        // 选中行右侧浮出的珊瑚色播放圆点（电视上提示"按 OK 就播这一集"）
+        val dotSize = dp(if (compact) 24 else 30)
+        val playDot = label("▶", if (compact) 10 else 12, Palette.card, display = true).apply {
+            gravity = Gravity.CENTER
+            background = shape(Palette.coral, dp(999).toFloat())
+            visibility = View.GONE
+        }
+        row.addView(playDot, LinearLayout.LayoutParams(dotSize, dotSize))
+
+        fun bind(on: Boolean) {
             row.background = shape(
-                if (has) Palette.card else Color.TRANSPARENT,
+                if (on) Palette.card else Color.TRANSPARENT,
                 dp(14).toFloat(),
-                if (has) dp(3) else 0,
+                if (on) dp(2.5f) else 0,
                 Palette.ink
             )
-            seriesLabel.setTextColor(if (has) Palette.ink else Palette.ink2)
-            episodeLabel.setTextColor(if (has) Palette.ink2 else Palette.ink3)
-            if (has) showPreview(v)
+            seriesLabel.setTextColor(if (on) Palette.ink else Palette.ink2)
+            episodeLabel.setTextColor(if (on) Palette.ink2 else Palette.ink3)
+            playDot.visibility = if (on) View.VISIBLE else View.GONE
         }
-        row.setOnClickListener { playList(shuffled, index) }
+        watchRowBinds.add(::bind)
+        bind(false)
+
+        // 遥控器：焦点即预览，OK 直接播
+        row.setOnFocusChangeListener { _, has ->
+            bind(has)
+            if (has) {
+                selectedWatch = index
+                showPreview(v)
+            }
+        }
+        // 触摸：点一行只是"选中"并预览；播放交给大画面或「全屏播放」
+        row.setOnClickListener {
+            if (row.isInTouchMode) selectRow(index) else playList(shuffled, index)
+        }
         return row
+    }
+
+    private var previewUrl: String? = null
+    /** 触摸模式下当前"选中"的是第几行（手机上没有焦点概念） */
+    private var selectedWatch = 0
+    /** 每一行怎么根据选中状态重绘自己 */
+    private val watchRowBinds = ArrayList<(Boolean) -> Unit>()
+
+    /** 手机上点一行：只切换预览，不直接播 */
+    private fun selectRow(index: Int) {
+        if (index !in shuffled.indices) return
+        selectedWatch = index
+        watchRowBinds.forEachIndexed { i, bind -> bind(i == index) }
+        showPreview(shuffled[index], force = true)
+    }
+
+    /** 点/聚焦「全屏播放」胶囊：从当前预览的这一集开始播 */
+    private fun playFromPreview() {
+        val url = previewUrl ?: return
+        val i = shuffled.indexOfFirst { it.url == url }
+        if (i >= 0) playList(shuffled, i)
     }
 
     /** 焦点落到哪一行，右边就播哪一集（静音、循环、260ms 防抖） */
     private fun showPreview(v: Video, force: Boolean = false) {
+        previewUrl = v.url
         previewSeries.text = seriesOf[v.url].orEmpty().ifBlank { "随心看" }
         previewEpisode.text = v.title
         if (!force && currentPreview == v.url) return
@@ -584,6 +685,9 @@ class MainActivity : Activity() {
             setShutterBackgroundColor(Palette.ink)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
             player = p
+            // 预览层盖在 previewBox 上面，点击得挂它自己，否则父布局收不到
+            isClickable = true
+            setOnClickListener { playFromPreview() }
         }
         previewView = pv
         previewBox.addView(pv, MATCH_PARENT, MATCH_PARENT)
