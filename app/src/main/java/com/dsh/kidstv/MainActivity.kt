@@ -1012,6 +1012,8 @@ class MainActivity : Activity() {
 
     private fun renderBooks(list: List<Book>) {
         booksHost.removeAllViews()
+        // 手机上点之前没有"焦点"这个动作，先把最前面几本预取上
+        list.take(3).forEach { BookCache.prefetch(this, it.url) }
         if (list.isEmpty()) {
             booksHost.addView(centered("还没有绘本", Palette.ink2, "往「${cfg.booksRoot}」里放 PDF 就会出现在这里"))
             return
@@ -1093,6 +1095,8 @@ class MainActivity : Activity() {
         )
 
         frame.setOnFocusChangeListener { v, has ->
+            // 焦点到这本就先下载，点开基本秒开
+            if (has) BookCache.prefetch(this, book.url)
             v.animate().scaleX(if (has) 1.04f else 1f).scaleY(if (has) 1.04f else 1f)
                 .setDuration(120).start()
             v.elevation = dp(if (has) 14 else 2).toFloat()
