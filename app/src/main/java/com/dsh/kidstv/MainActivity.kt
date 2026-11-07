@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
@@ -84,6 +86,18 @@ class MainActivity : Activity() {
     private var previewView: PlayerView? = null
     private var previewJob: Job? = null
     private var currentPreview: String? = null
+    /**
+     * 正在重建内容区。
+     * removeAllViews 会让焦点短暂悬空，系统可能把焦点塞给最近的 tab，
+     * 这时 tab 的「焦点即切页」会误触发（点开一个目录却跳回随心看）。
+     */
+    private var rebuilding: Boolean = false
+
+    private fun beginRebuild() {
+        rebuilding = true
+        Handler(Looper.getMainLooper()).postDelayed({ rebuilding = false }, 700)
+    }
+
     private var pendingSeriesFocus: Int = -1
     /** 当前打开的系列里，焦点停在第几集（刷新前记下来，刷新后还原） */
     private var focusedEpisode: Int = -1
@@ -345,7 +359,7 @@ class MainActivity : Activity() {
             setOnClickListener { switchTab(index) }
             // 焦点一到 tab 就切页，不用再按 OK
             setOnFocusChangeListener { _, hasFocus ->
-                if (hasFocus && tab != index) switchTab(index) else paintTabs()
+                if (hasFocus && !rebuilding && tab != index) switchTab(index) else paintTabs()
             }
         }
         val lp = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
@@ -398,6 +412,7 @@ class MainActivity : Activity() {
             }
             walk(host)
             (all.getOrNull(n) ?: all.firstOrNull())?.requestFocus()
+            rebuilding = false
         }
     }
 
@@ -526,6 +541,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderWatch(list: List<Video>) {
+        beginRebuild()
         shuffled = list
         watchList.removeAllViews()
         if (list.isEmpty()) {
@@ -725,6 +741,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderAll(list: List<Section>) {
+        beginRebuild()
         allHost.removeAllViews()
         val open = expanded
 
@@ -1016,6 +1033,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderBooks(list: List<Book>) {
+        beginRebuild()
         booksHost.removeAllViews()
         // 手机上点之前没有"焦点"这个动作，先把最前面几本预取上
         list.take(3).forEach { BookCache.prefetch(this, it.url) }
