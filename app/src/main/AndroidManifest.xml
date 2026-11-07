@@ -52,6 +52,14 @@
             android:theme="@style/PlayerTheme" />
 
         <activity
+            android:name=".RaceActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|navigation"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:theme="@style/PlayerTheme" />
+
+        <activity
             android:name=".SetupActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|navigation"
             android:exported="false"

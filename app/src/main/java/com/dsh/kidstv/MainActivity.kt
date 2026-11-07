@@ -50,9 +50,11 @@ class MainActivity : Activity() {
     private lateinit var tabWatch: TextView
     private lateinit var tabAll: TextView
     private lateinit var tabBooks: TextView
+    private lateinit var tabPlay: TextView
     private lateinit var pageWatch: View
     private lateinit var pageAll: View
     private lateinit var pageBooks: View
+    private lateinit var pagePlay: View
     private lateinit var booksHost: LinearLayout
     private lateinit var watchList: LinearLayout
     private lateinit var allHost: LinearLayout
@@ -216,8 +218,11 @@ class MainActivity : Activity() {
         content.addView(pageWatch, MATCH_PARENT, MATCH_PARENT)
         content.addView(pageAll, MATCH_PARENT, MATCH_PARENT)
         content.addView(pageBooks, MATCH_PARENT, MATCH_PARENT)
+        pagePlay = buildPlayPage()
+        content.addView(pagePlay, MATCH_PARENT, MATCH_PARENT)
         pageAll.visibility = View.GONE
         pageBooks.visibility = View.GONE
+        pagePlay.visibility = View.GONE
 
         paintTabs()
         root.addView(buildSplash(), MATCH_PARENT, MATCH_PARENT)
@@ -316,9 +321,11 @@ class MainActivity : Activity() {
         tabWatch = tabPill("随心看", 0)
         tabAll = tabPill("视频目录", 1)
         tabBooks = tabPill("绘本", 2)
+        tabPlay = tabPill("娱乐", 3)
         tabs.addView(tabWatch)
         tabs.addView(tabAll)
         tabs.addView(tabBooks)
+        tabs.addView(tabPlay)
         row.addView(tabs)
 
         val parent = label("家长", if (compact) 11 else 13, Palette.ink2).apply {
@@ -369,7 +376,7 @@ class MainActivity : Activity() {
     }
 
     private fun paintTabs() {
-        listOf(tabWatch to 0, tabAll to 1, tabBooks to 2).forEach { (tv, i) ->
+        listOf(tabWatch to 0, tabAll to 1, tabBooks to 2, tabPlay to 3).forEach { (tv, i) ->
             val on = tab == i
             val focused = tv.hasFocus()
             tv.setTextColor(if (focused || on) Palette.paper else Palette.ink2)
@@ -391,6 +398,7 @@ class MainActivity : Activity() {
         pageWatch.visibility = if (index == 0) View.VISIBLE else View.GONE
         pageAll.visibility = if (index == 1) View.VISIBLE else View.GONE
         pageBooks.visibility = if (index == 2) View.VISIBLE else View.GONE
+        pagePlay.visibility = if (index == 3) View.VISIBLE else View.GONE
         // 焦点留在 tab 上：左右键换 tab，OK 选中，按下键进内容区
         if (index == 0) previewPlayer?.play() else previewPlayer?.pause()
         if (index == 2) loadBooks()
@@ -995,6 +1003,79 @@ class MainActivity : Activity() {
     }
 
     // ---------------- Tab 3：绘本 ----------------
+
+    // ---------------- Tab 4：娱乐 ----------------
+
+    private fun buildPlayPage(): View {
+        val scroller = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val host = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            setPadding(0, dp(10), 0, dp(24))
+        }
+
+        host.addView(label("玩一玩", if (compact) 20 else 26, Palette.ink, display = true))
+        host.addView(label("遥控器左右转向，玩累了按返回键回来", if (compact) 11 else 13, Palette.ink2).apply {
+            setPadding(0, dp(4), 0, dp(18))
+        })
+
+        val rowView = row(if (compact) 10 else 16)
+        rowView.addView(gameCard("🏎", "赛车", "← → 转向 · OK 出发", Palette.coral, 0) {
+            startActivity(Intent(this, RaceActivity::class.java))
+        })
+        host.addView(rowView)
+
+        host.addView(label("更多游戏慢慢加", if (compact) 11 else 13, Palette.ink3).apply {
+            setPadding(dp(4), dp(26), 0, 0)
+        })
+
+        scroller.addView(host, MATCH_PARENT, WRAP_CONTENT)
+        return scroller
+    }
+
+    private fun gameCard(emoji: String, title: String, sub: String, color: Int, index: Int, onClick: () -> Unit): View {
+        val w = gridCardW
+        val h = (w * 3 / 4).coerceAtMost(dp(if (compact) 210 else 260))
+        val radius = dp(if (compact) 14 else 18).toFloat()
+
+        val frame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(w, h).apply { rightMargin = gridGap }
+            isFocusable = true
+            isClickable = true
+            noDefaultFocusRing()
+            background = shape(Palette.card, radius, dp(2), Palette.paper2)
+        }
+
+        // 顶部色块 + 大图标
+        frame.addView(View(this).apply {
+            background = shape(color, radius, 0, color)
+        }, FrameLayout.LayoutParams(MATCH_PARENT, (h * 0.52f).toInt()).apply { gravity = Gravity.TOP })
+
+        frame.addView(label(emoji, if (compact) 34 else 46, Palette.paper, display = true).apply {
+            gravity = Gravity.CENTER
+        }, FrameLayout.LayoutParams(MATCH_PARENT, (h * 0.52f).toInt()).apply { gravity = Gravity.TOP })
+
+        frame.addView(label(title, if (compact) 15 else 19, Palette.ink, display = true).apply {
+            setPadding(dp(if (compact) 14 else 20), dp(10), 0, 0)
+        }, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { gravity = Gravity.BOTTOM })
+
+        frame.addView(label(sub, if (compact) 10 else 12, Palette.ink2).apply {
+            setPadding(dp(if (compact) 14 else 20), 0, dp(10), dp(if (compact) 12 else 16))
+        }, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM))
+
+        frame.setOnFocusChangeListener { v, has ->
+            if (has) Speaker.say(title)
+            v.animate().scaleX(if (has) 1.05f else 1f).scaleY(if (has) 1.05f else 1f).setDuration(120).start()
+            v.elevation = dp(if (has) 16 else 2).toFloat()
+            v.background = shape(Palette.card, radius, dp(if (has) 5 else 2), if (has) Palette.ink else Palette.paper2)
+        }
+        frame.setOnClickListener { onClick() }
+        return frame
+    }
 
     private fun buildBooksPage(): View {
         val scroller = ScrollView(this).apply {
