@@ -27,6 +27,7 @@
             android:name=".MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|navigation"
             android:exported="true"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"
             android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -49,14 +50,6 @@
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|navigation"
             android:exported="false"
             android:launchMode="singleTask"
-            android:theme="@style/PlayerTheme" />
-
-        <activity
-            android:name=".RaceActivity"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|navigation"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:screenOrientation="landscape"
             android:theme="@style/PlayerTheme" />
 
         <activity

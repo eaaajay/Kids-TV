@@ -1,19 +1,26 @@
 package com.dsh.kidstv
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.InputType
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -50,14 +57,19 @@ class MainActivity : Activity() {
     private lateinit var tabWatch: TextView
     private lateinit var tabAll: TextView
     private lateinit var tabBooks: TextView
-    private lateinit var tabPlay: TextView
     private lateinit var pageWatch: View
     private lateinit var pageAll: View
     private lateinit var pageBooks: View
-    private lateinit var pagePlay: View
     private lateinit var booksHost: LinearLayout
     private lateinit var watchList: LinearLayout
     private lateinit var allHost: LinearLayout
+    private var searchAll: LinearLayout? = null
+    private var allSearchBox: EditText? = null
+    private var searchBooks: LinearLayout? = null
+    private var videoQuery: String = ""
+    private var bookQuery: String = ""
+    private var watchQuery: String = ""
+    private var watchAll: List<Video> = emptyList()
     private lateinit var previewBox: FrameLayout
     private lateinit var previewSeries: TextView
     private lateinit var previewEpisode: TextView
@@ -218,11 +230,8 @@ class MainActivity : Activity() {
         content.addView(pageWatch, MATCH_PARENT, MATCH_PARENT)
         content.addView(pageAll, MATCH_PARENT, MATCH_PARENT)
         content.addView(pageBooks, MATCH_PARENT, MATCH_PARENT)
-        pagePlay = buildPlayPage()
-        content.addView(pagePlay, MATCH_PARENT, MATCH_PARENT)
         pageAll.visibility = View.GONE
         pageBooks.visibility = View.GONE
-        pagePlay.visibility = View.GONE
 
         paintTabs()
         root.addView(buildSplash(), MATCH_PARENT, MATCH_PARENT)
@@ -321,11 +330,9 @@ class MainActivity : Activity() {
         tabWatch = tabPill("随心看", 0)
         tabAll = tabPill("视频目录", 1)
         tabBooks = tabPill("绘本", 2)
-        tabPlay = tabPill("娱乐", 3)
         tabs.addView(tabWatch)
         tabs.addView(tabAll)
         tabs.addView(tabBooks)
-        tabs.addView(tabPlay)
         row.addView(tabs)
 
         val parent = label("家长", if (compact) 11 else 13, Palette.ink2).apply {
@@ -376,7 +383,7 @@ class MainActivity : Activity() {
     }
 
     private fun paintTabs() {
-        listOf(tabWatch to 0, tabAll to 1, tabBooks to 2, tabPlay to 3).forEach { (tv, i) ->
+        listOf(tabWatch to 0, tabAll to 1, tabBooks to 2).forEach { (tv, i) ->
             val on = tab == i
             val focused = tv.hasFocus()
             tv.setTextColor(if (focused || on) Palette.paper else Palette.ink2)
@@ -398,7 +405,6 @@ class MainActivity : Activity() {
         pageWatch.visibility = if (index == 0) View.VISIBLE else View.GONE
         pageAll.visibility = if (index == 1) View.VISIBLE else View.GONE
         pageBooks.visibility = if (index == 2) View.VISIBLE else View.GONE
-        pagePlay.visibility = if (index == 3) View.VISIBLE else View.GONE
         // 焦点留在 tab 上：左右键换 tab，OK 选中，按下键进内容区
         if (index == 0) previewPlayer?.play() else previewPlayer?.pause()
         if (index == 2) loadBooks()
@@ -459,6 +465,23 @@ class MainActivity : Activity() {
             setPadding(0, 0, dp(if (compact) 4 else 12), 0)
         }
         scroller.addView(watchList, MATCH_PARENT, WRAP_CONTENT)
+
+        val leftCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+        }
+        leftCol.addView(
+            searchBar(
+                if (compact) "搜这一集的名字" else "搜分集名字，比如 Muddy Puddles",
+                watchQuery,
+                onChange = { q ->
+                    watchQuery = q
+                    renderWatch(watchAll)
+                }
+            ),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        )
+        leftCol.addView(scroller, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
         // 右边一大块：当前选中剧集的实时预览
         val right = LinearLayout(this).apply {
@@ -539,10 +562,10 @@ class MainActivity : Activity() {
         if (compact) {
             // 竖屏：预览在上、列表在下
             row.addView(right, MATCH_PARENT, WRAP_CONTENT)
-            row.addView(scroller, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            row.addView(leftCol, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         } else {
             // 电视：左列表、右预览
-            row.addView(scroller, LinearLayout.LayoutParams(dp(340), MATCH_PARENT))
+            row.addView(leftCol, LinearLayout.LayoutParams(dp(340), MATCH_PARENT))
             row.addView(right, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
         }
         return row
@@ -550,19 +573,33 @@ class MainActivity : Activity() {
 
     private fun renderWatch(list: List<Video>) {
         beginRebuild()
-        shuffled = list
+        watchAll = list
+
+        val q = watchQuery.trim()
+        val shown = if (q.isEmpty()) list else {
+            val key = q.lowercase()
+            // 随心看这一栏只按「分集名字」筛，整部剧的名字去「视频目录」搜
+            list.filter { it.title.lowercase().contains(key) }
+        }
+
         watchList.removeAllViews()
-        if (list.isEmpty()) {
+        if (q.isNotEmpty() && shown.isEmpty()) {
+            watchList.addView(centered("没找到「$q」", Palette.ink, "换个关键词，或点搜索框右边「清空」"))
+            watchRowBinds.clear()
+            return
+        }
+        shuffled = shown
+        if (shown.isEmpty()) {
             watchList.addView(centered("这里还是空的", Palette.ink2, "去「视频目录」看看"))
             return
         }
         watchRowBinds.clear()
         selectedWatch = 0
-        list.forEachIndexed { i, v -> watchList.addView(watchRow(v, i)) }
+        shown.forEachIndexed { i, v -> watchList.addView(watchRow(v, i)) }
         watchRowBinds.forEachIndexed { i, bind -> bind(i == selectedWatch) }
         if (tab == 0) {
             watchList.post { watchList.getChildAt(0)?.requestFocus() }
-            list.firstOrNull()?.let { showPreview(it, force = true) }
+            shown.firstOrNull()?.let { showPreview(it, force = true) }
         }
     }
 
@@ -650,6 +687,7 @@ class MainActivity : Activity() {
         }
         // 触摸：点一行只是"选中"并预览；播放交给大画面或「全屏播放」
         row.setOnClickListener {
+            if (watchQuery.isNotBlank()) SearchHistory.add(this, watchQuery)
             if (row.isInTouchMode) selectRow(index) else playList(shuffled, index)
         }
         return row
@@ -734,6 +772,19 @@ class MainActivity : Activity() {
     // ---------------- Tab 2：视频目录 ----------------
 
     private fun buildAllPage(): View {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val box = searchBar("搜系列名（比如 小猪佩奇 / Little Fox）", videoQuery,
+            onChange = { q ->
+                videoQuery = q
+                renderAll(sections)
+            },
+            onBox = { allSearchBox = it }
+        )
+        searchAll = box
+        page.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
         val scroller = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             clipToPadding = false
@@ -745,12 +796,171 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(20))
         }
         scroller.addView(allHost, MATCH_PARENT, WRAP_CONTENT)
-        return scroller
+        page.addView(scroller, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        return page
+    }
+
+    /**
+     * 搜索区：输入框 + 历史记录。
+     * 遥控器按 OK 调出输入法；框里为空时把最近搜过的词摆出来，点一下就填回去。
+     */
+    private fun searchBar(
+        hint: String,
+        initial: String,
+        onChange: (String) -> Unit,
+        onBox: ((EditText) -> Unit)? = null
+    ): LinearLayout {
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val line = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val box = EditText(this).apply {
+            this.hint = hint
+            isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT
+            textSize = if (compact) 13f else 15f
+            setTextColor(Palette.ink)
+            setHintTextColor(Palette.ink3)
+            background = shape(Palette.card, dp(22).toFloat(), dp(1), Palette.paper2)
+            setPadding(dp(16), dp(9), dp(16), dp(9))
+            isFocusable = true
+            isFocusableInTouchMode = true
+            // 不主动弹键盘：遥控器/手指按一下才出来，否则一进页面就被输入法糊住
+            showSoftInputOnFocus = false
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            setOnClickListener { showKeyboard(this) }
+            if (initial.isNotEmpty()) {
+                setText(initial)
+                setSelection(initial.length)
+            }
+        }
+        line.addView(box, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        onBox?.invoke(box)
+
+        val clear = label("清空", if (compact) 11 else 13, Palette.ink2).apply {
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = shape(Palette.card, dp(18).toFloat(), dp(1), Palette.paper2)
+            isFocusable = true
+            isClickable = true
+            noDefaultFocusRing()
+            visibility = if (box.text.isNullOrEmpty()) View.GONE else View.VISIBLE
+            setOnClickListener {
+                box.setText("")
+                onChange("")
+            }
+            setOnFocusChangeListener { v, has ->
+                v.background = shape(
+                    if (has) Palette.ink else Palette.card,
+                    dp(18).toFloat(), dp(1), if (has) Palette.ink else Palette.paper2
+                )
+                (v as TextView).setTextColor(if (has) Palette.paper else Palette.ink2)
+            }
+        }
+        line.addView(clear, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(8) })
+        wrap.addView(line)
+
+        // 历史记录
+        val chips = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val chipScroller = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            setPadding(0, dp(10), 0, 0)
+            addView(chips)
+        }
+        wrap.addView(chipScroller)
+
+        fun refreshChips() {
+            chips.removeAllViews()
+            val recent = SearchHistory.load(this)
+            val show = recent.isNotEmpty() && box.text.isEmpty()
+            chipScroller.visibility = if (show) View.VISIBLE else View.GONE
+            if (!show) return
+
+            chips.addView(label("最近", if (compact) 11 else 13, Palette.ink3).apply {
+                setPadding(0, 0, dp(10), 0)
+            })
+
+            recent.take(6).forEach { q ->
+                val chip = label(q, if (compact) 11 else 13, Palette.ink2).apply {
+                    setPadding(dp(12), dp(6), dp(12), dp(6))
+                    background = shape(Palette.card, dp(16).toFloat(), dp(1), Palette.paper2)
+                    isFocusable = true
+                    isClickable = true
+                    noDefaultFocusRing()
+                    setOnClickListener {
+                        box.setText(q)
+                        box.setSelection(q.length)
+                        onChange(q)
+                    }
+                    setOnFocusChangeListener { v, has ->
+                        v.background = shape(
+                            if (has) Palette.coral else Palette.card,
+                            dp(16).toFloat(), dp(1), if (has) Palette.coral else Palette.paper2
+                        )
+                        (v as TextView).setTextColor(if (has) Palette.paper else Palette.ink2)
+                    }
+                }
+                chips.addView(chip, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { rightMargin = dp(8) })
+            }
+        }
+        refreshChips()
+
+        box.setOnFocusChangeListener { _, has ->
+            if (has) refreshChips()
+        }
+
+        box.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                clear.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+                chipScroller.visibility =
+                    if (s.isNullOrEmpty() && SearchHistory.load(this@MainActivity).isNotEmpty()) View.VISIBLE else View.GONE
+                onChange(s?.toString() ?: "")
+            }
+        })
+
+        // 输入法按「搜索」：记一条历史，收键盘
+        box.setOnEditorActionListener { _, _, _ ->
+            val q = box.text.toString().trim()
+            if (q.isNotEmpty()) {
+                SearchHistory.add(this, q)
+                refreshChips()
+            }
+            hideKeyboard()
+            true
+        }
+
+        wrap.setPadding(0, 0, 0, dp(12))
+        return wrap
+    }
+
+    private fun showKeyboard(v: View) {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(currentFocus?.windowToken, 0)
+        currentFocus?.clearFocus()
     }
 
     private fun renderAll(list: List<Section>) {
         beginRebuild()
         allHost.removeAllViews()
+
+        val q = videoQuery.trim()
+        if (q.isNotEmpty() && expanded == null) {
+            renderSeriesSearch(list, q)
+            return
+        }
+
         val open = expanded
 
         if (open == null) {
@@ -790,7 +1000,50 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 卡片间距 */
+    /** 视频目录的搜索：只认「系列名」，命中就把系列卡片铺出来，点进去再看分集 */
+    private fun renderSeriesSearch(list: List<Section>, q: String) {
+        val key = q.lowercase()
+        val hits = list.filter { it.title.lowercase().contains(key) }
+
+        if (hits.isEmpty()) {
+            allHost.addView(centered("没有名字包含「$q」的系列", Palette.ink, "点搜索框右边「清空」看全部，剧集名去「随心看」搜"))
+            return
+        }
+
+        allHost.addView(label("找到 ${hits.size} 个系列", if (compact) 12 else 14, Palette.ink2).apply {
+            setPadding(0, 0, 0, dp(12))
+        })
+
+        val perRow = gridColumns
+        hits.chunked(perRow).forEachIndexed { rowIndex, chunk ->
+            val rowView = row(if (compact) 8 else 16)
+            chunk.forEachIndexed { i, sec ->
+                val index = rowIndex * perRow + i
+                rowView.addView(
+                    tile(
+                        title = sec.title,
+                        badge = "${sec.videos.size} 集",
+                        coverUrl = sec.videos.firstNotNullOfOrNull { it.thumb },
+                        initial = sec.title.take(1),
+                        index = index,
+                        onClick = {
+                            if (videoQuery.isNotBlank()) SearchHistory.add(this, videoQuery)
+                            // 点开系列时把搜索清掉，进去就是正常的分集列表
+                            videoQuery = ""
+                            allSearchBox?.setText("")
+                            expand(sec, index)
+                        },
+                        frameUrl = sec.videos.firstOrNull()?.url
+                    )
+                )
+            }
+            allHost.addView(rowView)
+        }
+
+        if (tab == 1 && searchAll?.findFocus() == null) focusNth(allHost, 0)
+    }
+
+    /** 卡片间距 */    /** 卡片间距 */
     private val gridGap: Int get() = dp(if (compact) 10 else 18)
 
     /** 一行放几张：按可用宽度算，最小卡宽 190dp（手机 170dp），保证不会被裁 */
@@ -1004,80 +1257,17 @@ class MainActivity : Activity() {
 
     // ---------------- Tab 3：绘本 ----------------
 
-    // ---------------- Tab 4：娱乐 ----------------
-
-    private fun buildPlayPage(): View {
-        val scroller = ScrollView(this).apply {
-            isVerticalScrollBarEnabled = false
-            clipToPadding = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-        }
-        val host = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            setPadding(0, dp(10), 0, dp(24))
-        }
-
-        host.addView(label("玩一玩", if (compact) 20 else 26, Palette.ink, display = true))
-        host.addView(label("遥控器左右转向，玩累了按返回键回来", if (compact) 11 else 13, Palette.ink2).apply {
-            setPadding(0, dp(4), 0, dp(18))
-        })
-
-        val rowView = row(if (compact) 10 else 16)
-        rowView.addView(gameCard("🏎", "赛车", "← → 转向 · OK 出发", Palette.coral, 0) {
-            startActivity(Intent(this, RaceActivity::class.java))
-        })
-        host.addView(rowView)
-
-        host.addView(label("更多游戏慢慢加", if (compact) 11 else 13, Palette.ink3).apply {
-            setPadding(dp(4), dp(26), 0, 0)
-        })
-
-        scroller.addView(host, MATCH_PARENT, WRAP_CONTENT)
-        return scroller
-    }
-
-    private fun gameCard(emoji: String, title: String, sub: String, color: Int, index: Int, onClick: () -> Unit): View {
-        val w = gridCardW
-        val h = (w * 3 / 4).coerceAtMost(dp(if (compact) 210 else 260))
-        val radius = dp(if (compact) 14 else 18).toFloat()
-
-        val frame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(w, h).apply { rightMargin = gridGap }
-            isFocusable = true
-            isClickable = true
-            noDefaultFocusRing()
-            background = shape(Palette.card, radius, dp(2), Palette.paper2)
-        }
-
-        // 顶部色块 + 大图标
-        frame.addView(View(this).apply {
-            background = shape(color, radius, 0, color)
-        }, FrameLayout.LayoutParams(MATCH_PARENT, (h * 0.52f).toInt()).apply { gravity = Gravity.TOP })
-
-        frame.addView(label(emoji, if (compact) 34 else 46, Palette.paper, display = true).apply {
-            gravity = Gravity.CENTER
-        }, FrameLayout.LayoutParams(MATCH_PARENT, (h * 0.52f).toInt()).apply { gravity = Gravity.TOP })
-
-        frame.addView(label(title, if (compact) 15 else 19, Palette.ink, display = true).apply {
-            setPadding(dp(if (compact) 14 else 20), dp(10), 0, 0)
-        }, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { gravity = Gravity.BOTTOM })
-
-        frame.addView(label(sub, if (compact) 10 else 12, Palette.ink2).apply {
-            setPadding(dp(if (compact) 14 else 20), 0, dp(10), dp(if (compact) 12 else 16))
-        }, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM))
-
-        frame.setOnFocusChangeListener { v, has ->
-            if (has) Speaker.say(title)
-            v.animate().scaleX(if (has) 1.05f else 1f).scaleY(if (has) 1.05f else 1f).setDuration(120).start()
-            v.elevation = dp(if (has) 16 else 2).toFloat()
-            v.background = shape(Palette.card, radius, dp(if (has) 5 else 2), if (has) Palette.ink else Palette.paper2)
-        }
-        frame.setOnClickListener { onClick() }
-        return frame
-    }
-
     private fun buildBooksPage(): View {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val box = searchBar("搜绘本名字", bookQuery, onChange = { q ->
+            bookQuery = q
+            renderBooks(books)
+        })
+        searchBooks = box
+        page.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
         val scroller = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             clipToPadding = false
@@ -1090,7 +1280,8 @@ class MainActivity : Activity() {
         }
         scroller.addView(booksHost, MATCH_PARENT, WRAP_CONTENT)
         booksHost.addView(centered("正在找绘本…", Palette.ink2, "扫 NAS 上的 PDF"))
-        return scroller
+        page.addView(scroller, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        return page
     }
 
     private fun loadBooks() {
@@ -1113,11 +1304,19 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderBooks(list: List<Book>) {
+    private fun renderBooks(all: List<Book>) {
         beginRebuild()
         booksHost.removeAllViews()
+
+        val q = bookQuery.trim()
+        val list = if (q.isEmpty()) all else all.filter { it.title.lowercase().contains(q.lowercase()) }
+
         // 手机上点之前没有"焦点"这个动作，先把最前面几本预取上
         list.take(3).forEach { BookCache.prefetch(this, it.url) }
+        if (q.isNotEmpty() && list.isEmpty()) {
+            booksHost.addView(centered("没找到「$q」", Palette.ink, "换个关键词试试"))
+            return
+        }
         if (list.isEmpty()) {
             booksHost.addView(centered("还没有绘本", Palette.ink2, "往「${cfg.booksRoot}」里放 PDF 就会出现在这里"))
             return
@@ -1214,6 +1413,7 @@ class MainActivity : Activity() {
             )
         }
         frame.setOnClickListener {
+            if (bookQuery.isNotBlank()) SearchHistory.add(this, bookQuery)
             startActivity(Intent(this, BookActivity::class.java).apply {
                 putExtra("url", book.url)
                 putExtra("title", book.title)
