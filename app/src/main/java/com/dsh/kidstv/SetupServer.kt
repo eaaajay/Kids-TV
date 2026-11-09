@@ -216,6 +216,7 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>夏夏爱学习 · 家长设置</title>
 <style>
+  .hint{font-size:13px;line-height:1.5;margin:-6px 0 14px}
   :root{--paper:#F7EDDC;--ink:#17324D;--ink2:#5B7186;--coral:#E85C43;--line:#E2D2B4;--card:#FFFBF4}
   *{box-sizing:border-box}
   body{margin:0;background:var(--paper);color:var(--ink);padding:26px 18px 60px;
@@ -258,16 +259,19 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
       <div class="narrow"><label>端口</label>
         <input name="port" inputmode="numeric" placeholder="5005" value="$port"></div>
     </div>
-    <label>WebDAV 根路径</label>
-    <input name="root" placeholder="/video/kids" value="${esc(root)}">
+    <label>视频目录（随心看 + 视频目录扫这里）</label>
+    <input name="root" placeholder="/视频资源/儿童视频" value="${esc(root)}" oninput="checkRoot(this)">
+    <p class="hint" id="rootWarn" style="display:none;color:#E85C43">
+      填 <b>/</b> 会把整个 NAS 都扫进来（卡拉OK、照片、备份全算），慢且不相关。请填到具体的视频文件夹。
+    </p>
     <div class="row">
       <div><label>账号（没有就留空）</label>
         <input name="user" autocapitalize="off" autocorrect="off" value="${esc(cfg.user)}"></div>
       <div><label>密码</label>
         <input name="pass" type="password" value="${esc(cfg.pass)}"></div>
     </div>
-    <label>绘本目录（放 PDF 的文件夹，留空就和视频同目录）</label>
-    <input name="books" placeholder="/books/绘本" value="${esc(cfg.booksPath)}">
+    <label>绘本目录（绘本页只扫这里；留空则退回视频目录）</label>
+    <input name="books" placeholder="/绘本" value="${esc(cfg.booksPath)}">
 
     <label>桌面标题（孩子看到的名字）</label>
     <input name="title" placeholder="英语时间" value="${esc(cfg.title)}">
@@ -277,6 +281,13 @@ class SetupServer(private val ctx: Context, private val startPort: Int = 8765) {
   <button id="save" type="button">保存到电视</button>
   <div id="msg"></div>
 </form>
+<script>
+function checkRoot(el){
+  var v = (el.value || '').trim();
+  document.getElementById('rootWarn').style.display = (v === '/' || v === '') ? 'block' : 'none';
+}
+checkRoot(document.querySelector('input[name=root]'));
+</script>
 
 <p class="note">端口看你的 NAS：fnOS / 群晖 / 威联通常见 5005，
 极空间在「系统设置 → 文件共享 → WebDAV」里能看到。<br>
