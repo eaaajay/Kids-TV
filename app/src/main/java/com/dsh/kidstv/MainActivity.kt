@@ -65,6 +65,12 @@ class MainActivity : Activity() {
     private lateinit var allHost: LinearLayout
     private var searchAll: LinearLayout? = null
     private var allSearchBox: EditText? = null
+
+    // 扫描状态：顶部那行要能看出「还在动」，而不是卡死
+    private var scanStep: String = "连接 NAS"
+    private var scanStartAt: Long = 0L
+    private var scanTicker: Runnable? = null
+    private val handler = Handler(Looper.getMainLooper())
     private var searchBooks: LinearLayout? = null
     private var videoQuery: String = ""
     private var bookQuery: String = ""
@@ -1437,18 +1443,21 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
+        startScanTicker()
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     Library.scan(cfg) { step ->
+                        scanStep = step
                         runOnUiThread {
-                            subtitle.text = "扫描中：$step"
-                            if (splash.visibility == View.VISIBLE) splashStep.text = "扫描中：$step"
+                            subtitle.text = scanText()
+                            if (splash.visibility == View.VISIBLE) splashStep.text = scanText()
                         }
                     }
                 }
             }
             result.onSuccess { list ->
+                stopScanTicker()
                 // 演示模式下 sections 不是空的，以前用 sections.isEmpty() 判断，
                 // 失败时错误会被整个吞掉，界面永远停在「正在连接 NAS…」，家长一脸懵。
                 hideSplash()
@@ -1463,9 +1472,17 @@ class MainActivity : Activity() {
                 Library.saveCache(this@MainActivity, cfg, list)
                 renderData(list)
             }.onFailure { e ->
+                stopScanTicker()
                 hideSplash()
+                // 以前出错只改了列表区，顶部还挂着「扫描中…」，看着就像卡死
+                subtitle.text = "连不上 NAS"
                 if (sections.isEmpty() || showingDemo) {
-                    showEmpty("连不上 NAS", e.message ?: "检查电视和 NAS 是否在同一个 WiFi")
+                    val why = e.message?.takeIf { it.isNotBlank() } ?: "连接超时"
+                    showEmptyAction(
+                        "连不上 NAS",
+                        "$why\n${cfg.base}${cfg.rootPath}",
+                        "重试"
+                    ) { refresh() }
                 }
             }
         }
@@ -1514,6 +1531,65 @@ class MainActivity : Activity() {
         watchList.addView(centered(msg, Palette.ink2, "正在读取 NAS 上的目录"))
         allHost.removeAllViews()
         allHost.addView(centered(msg, Palette.ink2, ""))
+    }
+
+    private fun scanText(): String {
+        val sec = if (scanStartAt == 0L) 0 else ((System.currentTimeMillis() - scanStartAt) / 1000).toInt()
+        return if (sec < 3) "扫描中：$scanStep" else "扫描中：$scanStep · ${sec}s"
+    }
+
+    private fun startScanTicker() {
+        stopScanTicker()
+        scanStep = "连接 NAS"
+        scanStartAt = System.currentTimeMillis()
+        subtitle.text = scanText()
+        val tick = object : Runnable {
+            override fun run() {
+                subtitle.text = scanText()
+                if (splash.visibility == View.VISIBLE) splashStep.text = scanText()
+                handler.postDelayed(this, 1000)
+            }
+        }
+        scanTicker = tick
+        handler.postDelayed(tick, 1000)
+    }
+
+    private fun stopScanTicker() {
+        scanTicker?.let { handler.removeCallbacks(it) }
+        scanTicker = null
+    }
+
+    /** 空状态 + 一个能聚焦的「重试」按钮（电视上点得到） */
+    private fun showEmptyAction(title: String, detail: String, actionLabel: String, action: () -> Unit) {
+        watchList.removeAllViews()
+        allHost.removeAllViews()
+
+        fun build(): LinearLayout {
+            val box = centered(title, Palette.ink, detail) as LinearLayout
+            val btn = label(actionLabel, if (compact) 13 else 16, Palette.paper, display = true).apply {
+                setPadding(dp(26), dp(10), dp(26), dp(10))
+                background = shape(Palette.coral, dp(24).toFloat())
+                isFocusable = true
+                isClickable = true
+                noDefaultFocusRing()
+                setOnClickListener { action() }
+                setOnFocusChangeListener { v, has ->
+                    v.background = shape(if (has) Palette.ink else Palette.coral, dp(24).toFloat())
+                }
+            }
+            box.addView(btn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = dp(18)
+            })
+            box.tag = btn
+            return box
+        }
+
+        val a = build()
+        val b = build()
+        watchList.addView(a)
+        allHost.addView(b)
+        ((a.tag ?: b.tag) as? View)?.post { ((a.tag ?: b.tag) as? View)?.requestFocus() }
     }
 
     private fun showEmpty(title: String, detail: String) {
