@@ -39,72 +39,168 @@ object Library {
     private const val MAX_SECTIONS = 120
     private const val MAX_DEPTH = 4
 
-    fun scan(cfg: NasConfig, onStep: (String) -> Unit = {}): List<Section> {
+    /** 增量扫描用的目录指纹：mtime 没变就说明里面的文件没动 */
+    private data class CachedDir(
+        val mtime: Long,
+        val videos: List<Video>,
+        val subdirs: List<DavEntry>
+    )
+
+    private fun fetchChildren(dav: DavClient, href: String): List<DavEntry>? {
+        for (attempt in 0 until 3) {
+            try {
+                return dav.propfind(href, 1)
+            } catch (e: Exception) {
+                android.util.Log.w("Library", "读取 $href 失败（第 ${attempt + 1} 次）：${e.message}")
+                Thread.sleep(300L * (attempt + 1))
+            }
+        }
+        return null
+    }
+
+    fun scan(ctx: Context?, cfg: NasConfig, onStep: (String) -> Unit = {}): List<Section> {
         val dav = DavClient(cfg)
         val rootHref = DavClient.encodePath(cfg.rootPath)
         onStep("连接 NAS")
         val root = dav.propfind(rootHref, 1)
+
+        // 上一次扫描留下的目录指纹；命中就不发 PROPFIND
+        val oldIndex = if (ctx != null) loadIndex(ctx, cfg) else emptyMap()
+        val newIndex = HashMap<String, CachedDir>()
 
         val sections = ArrayList<Section>()
 
         val rootVideos = root.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
         if (rootVideos.isNotEmpty()) {
             val art = artMap(root)
-            val subs = subMap(root)
             sections += Section(
                 cfg.title.ifBlank { "英语时间" },
-                rootVideos.map { toVideo(dav, it, art, subs) }
+                rootVideos.map { toVideo(dav, it, art, subMap(root)) }
             )
         }
 
-        // 一层层往下找：哪个目录里直接有视频，就把它当成一个"系列"。
-        // 以前只下钻一层，像 /视频资源/儿童视频/小猪佩奇第一部/ 这种四层结构
-        // 会整个扫不到，界面只会说"NAS 里还没有视频"。
         val queue = ArrayDeque<Pair<DavEntry, Int>>()
-        // 跳过隐藏目录（.ssh / .config / .git…）：NAS 根目录下这类东西不少，
-        // 扫它们既没有视频，又在慢速中继上白花几十次请求。
-        root.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(natural).forEach { queue.addLast(it to 1) }
+        root.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(natural)
+            .forEach { queue.addLast(it to 1) }
         val visited = HashSet<String>()
         var budget = MAX_REQUESTS
+        var reused = 0
 
         while (queue.isNotEmpty() && budget > 0 && sections.size < MAX_SECTIONS) {
             val (dir, depth) = queue.removeFirst()
             if (!visited.add(dir.href)) continue
             budget--
-            onStep(cleanTitle(dir.name))
-            // 中继偶尔会 401/超时；以前失败就跳过，结果整个系列在界面上凭空消失。
-            // 给三次机会（退避 300/600/900ms），真失败才跳过并记日志。
-            var children: List<DavEntry>? = null
-            var lastError: Throwable? = null
-            for (attempt in 0 until 3) {
-                try {
-                    children = dav.propfind(dir.href, 1)
-                    break
-                } catch (e: Exception) {
-                    lastError = e
-                    Thread.sleep(300L * (attempt + 1))
-                }
-            }
-            val kids = children
-            if (kids == null) {
-                android.util.Log.w("Library", "跳过 ${dir.name}：${lastError?.message}")
-                continue
+
+            val cached = oldIndex[dir.href]
+            val hit = cached != null && dir.lastModified > 0 && cached.mtime == dir.lastModified
+
+            val vids: List<Video>
+            val subdirs: List<DavEntry>
+            if (hit) {
+                vids = cached!!.videos
+                subdirs = cached.subdirs
+                newIndex[dir.href] = cached
+                reused++
+            } else {
+                onStep(cleanTitle(dir.name))
+                val kids = fetchChildren(dav, dir.href) ?: continue
+                val list = kids.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
+                vids = list.map { toVideo(dav, it, artMap(kids), subMap(kids)) }
+                subdirs = kids.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(natural)
+                newIndex[dir.href] = CachedDir(dir.lastModified, vids, subdirs)
             }
 
-            val vids = kids.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
             if (vids.isNotEmpty()) {
-                val art = artMap(kids)
-                val subs = subMap(children)
-                sections += Section(cleanTitle(dir.name), vids.map { toVideo(dav, it, art, subs) })
+                sections += Section(cleanTitle(dir.name), vids)
                 // 这个目录自己就有视频，就不再往里钻，免得父子重复
                 continue
             }
             if (depth >= MAX_DEPTH) continue
-            kids.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(natural)
-                .forEach { queue.addLast(it to depth + 1) }
+            subdirs.forEach { queue.addLast(it to depth + 1) }
         }
 
+        if (ctx != null) saveIndex(ctx, cfg, newIndex)
+        if (reused > 0) android.util.Log.d("Library", "增量扫描：复用 $reused 个目录")
         return sections
+    }
+
+    // ---------- 增量扫描索引 ----------
+
+    private fun indexFile(ctx: Context, cfg: NasConfig) =
+        File(ctx.filesDir, "scan-${md5(cfg.cacheKey)}.json")
+
+    private fun loadIndex(ctx: Context, cfg: NasConfig): Map<String, CachedDir> {
+        val f = indexFile(ctx, cfg)
+        if (!f.exists()) return emptyMap()
+        return runCatching {
+            val root = JSONObject(f.readText())
+            val out = HashMap<String, CachedDir>()
+            val it = root.keys()
+            while (it.hasNext()) {
+                val href = it.next()
+                val o = root.optJSONObject(href) ?: continue
+                val videos = ArrayList<Video>()
+                val va = o.optJSONArray("v")
+                if (va != null) {
+                    for (i in 0 until va.length()) {
+                        val vo = va.getJSONObject(i)
+                        videos += Video(
+                            vo.optString("t"),
+                            vo.optString("u"),
+                            vo.optString("th").ifBlank { null },
+                            vo.optString("sub").ifBlank { null }
+                        )
+                    }
+                }
+                val subdirs = ArrayList<DavEntry>()
+                val da = o.optJSONArray("d")
+                if (da != null) {
+                    for (i in 0 until da.length()) {
+                        val de = da.getJSONObject(i)
+                        subdirs += DavEntry(
+                            name = de.optString("n"),
+                            href = de.optString("h"),
+                            isDir = true,
+                            size = 0L,
+                            lastModified = de.optLong("m")
+                        )
+                    }
+                }
+                out[href] = CachedDir(o.optLong("mt"), videos, subdirs)
+            }
+            out
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun saveIndex(ctx: Context, cfg: NasConfig, index: Map<String, CachedDir>) {
+        runCatching {
+            val root = JSONObject()
+            index.forEach { (href, c) ->
+                val o = JSONObject()
+                o.put("mt", c.mtime)
+                val va = JSONArray()
+                c.videos.forEach { v ->
+                    val vo = JSONObject()
+                    vo.put("t", v.title)
+                    vo.put("u", v.url)
+                    if (v.thumb != null) vo.put("th", v.thumb)
+                    if (v.sub != null) vo.put("sub", v.sub)
+                    va.put(vo)
+                }
+                o.put("v", va)
+                val da = JSONArray()
+                c.subdirs.forEach { d ->
+                    val de = JSONObject()
+                    de.put("n", d.name)
+                    de.put("h", d.href)
+                    de.put("m", d.lastModified)
+                    da.put(de)
+                }
+                o.put("d", da)
+                root.put(href, o)
+            }
+            indexFile(ctx, cfg).writeText(root.toString())
+        }
     }
 
     private fun artMap(entries: List<DavEntry>): Map<String, DavEntry> =

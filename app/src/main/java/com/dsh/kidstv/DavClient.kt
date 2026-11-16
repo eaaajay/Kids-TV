@@ -13,7 +13,14 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-data class DavEntry(val name: String, val href: String, val isDir: Boolean, val size: Long)
+data class DavEntry(
+    val name: String,
+    val href: String,
+    val isDir: Boolean,
+    val size: Long,
+    /** 服务器给的最后修改时间（毫秒），拿不到就是 0。增量扫描靠它判断目录变没变 */
+    val lastModified: Long = 0L
+)
 
 /**
  * 极简 WebDAV 客户端：只做两件事 —— 列目录(PROPFIND)、拼播放地址。
@@ -35,6 +42,7 @@ class DavClient(private val cfg: NasConfig) {
                 <d:displayname/>
                 <d:resourcetype/>
                 <d:getcontentlength/>
+                <d:getlastmodified/>
               </d:prop>
             </d:propfind>
         """.trimIndent()
@@ -66,13 +74,14 @@ class DavClient(private val cfg: NasConfig) {
         var href: String? = null
         var isDir = false
         var size = 0L
+        var modified = 0L
         val out = ArrayList<DavEntry>()
 
         while (event != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
                 when (parser.name) {
                     "response" -> {
-                        href = null; isDir = false; size = 0L
+                        href = null; isDir = false; size = 0L; modified = 0L
                     }
                     // 文本要在 START_TAG 上取：END_TAG 事件里 getText() 返回 null
                     "href" -> href = runCatching { parser.nextText() }.getOrNull()?.trim()
@@ -81,11 +90,15 @@ class DavClient(private val cfg: NasConfig) {
                         val v = runCatching { parser.nextText() }.getOrDefault("")
                         size = v.trim().toLongOrNull() ?: 0L
                     }
+                    "getlastmodified" -> {
+                        val v = runCatching { parser.nextText() }.getOrDefault("")
+                        modified = parseHttpDate(v.trim())
+                    }
                 }
             } else if (event == XmlPullParser.END_TAG && parser.name == "response") {
                 val raw = href
                 if (!raw.isNullOrEmpty()) {
-                    val entry = makeEntry(raw, isDir, size)
+                    val entry = makeEntry(raw, isDir, size, modified)
                     if (entry != null && normalize(entry.href) != normalize(self)) out.add(entry)
                 }
             }
@@ -94,7 +107,23 @@ class DavClient(private val cfg: NasConfig) {
         return out
     }
 
-    private fun makeEntry(rawHref: String, isDir: Boolean, size: Long): DavEntry? {
+    private fun parseHttpDate(s: String): Long {
+        if (s.isBlank()) return 0L
+        val patterns = arrayOf(
+            "EEE, dd MMM yyyy HH:mm:ss zzz",
+            "EEE, dd MMM yyyy HH:mm:ss Z"
+        )
+        for (p in patterns) {
+            runCatching {
+                val fmt = java.text.SimpleDateFormat(p, java.util.Locale.US)
+                fmt.timeZone = java.util.TimeZone.getTimeZone("GMT")
+                return fmt.parse(s)?.time ?: 0L
+            }
+        }
+        return 0L
+    }
+
+    private fun makeEntry(rawHref: String, isDir: Boolean, size: Long, modified: Long): DavEntry? {
         var href = rawHref
         if (href.startsWith("http://", true) || href.startsWith("https://", true)) {
             val idx = href.indexOf('/', href.indexOf("://") + 3)
@@ -105,7 +134,7 @@ class DavClient(private val cfg: NasConfig) {
         val seg = href.trimEnd('/').substringAfterLast('/')
         val name = decodeSeg(seg)
         if (name.isEmpty()) return null
-        return DavEntry(name, href.trimEnd('/'), isDir, size)
+        return DavEntry(name, href.trimEnd('/'), isDir, size, modified)
     }
 
     companion object {

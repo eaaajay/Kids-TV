@@ -68,14 +68,16 @@ class PlayerActivity : Activity() {
     private var menuSel = 1
 
     private var urls = ArrayList<String>()
+    private var titles = ArrayList<String>()
+    private var seriesNames = ArrayList<String>()
     private var startIndex = 0
 
     private val ui = Handler(Looper.getMainLooper())
 
     // ---- 倍速 ----
-    private val speeds = floatArrayOf(0.75f, 1f, 1.25f)
-    private val speedLabels = arrayOf("0.75", "1", "1.25")
-    private var speedIndex = 1
+    private val speeds = floatArrayOf(0.75f, 0.9f, 1f, 1.25f)
+    private val speedLabels = arrayOf("0.75", "0.9", "1", "1.25")
+    private var speedIndex = 2   // 默认 1.0×（索引 2）
 
     // ---- 缓存 / 速度 ----
     private val transferred = AtomicLong(0)
@@ -97,11 +99,15 @@ class PlayerActivity : Activity() {
         hideSystemUi()
 
         urls = intent.getStringArrayListExtra("urls") ?: ArrayList()
+        titles = intent.getStringArrayListExtra("titles") ?: ArrayList()
+        seriesNames = intent.getStringArrayListExtra("series") ?: ArrayList()
         startIndex = intent.getIntExtra("index", 0).coerceIn(0, (urls.size - 1).coerceAtLeast(0))
-        speedIndex = Prefs.speedIndex(this).coerceIn(0, speeds.size - 1)
+        val saved = Prefs.speed(this)
+        speedIndex = speeds.indices.minByOrNull { kotlin.math.abs(speeds[it] - saved) } ?: 2
 
         setContentView(buildUi())
         startPlayback()
+        rememberCurrent()
         paintBannerButtons()
         showBanner()
         ui.post(ticker)
@@ -461,6 +467,7 @@ class PlayerActivity : Activity() {
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                rememberCurrent()
                 showBanner()
                 updateStats()
             }
@@ -511,6 +518,14 @@ class PlayerActivity : Activity() {
 
     // ---------------- 播放 / 暂停 ----------------
 
+    /** 记一条观看历史（同一集反复看不重复记） */
+    private fun rememberCurrent() {
+        val p = player ?: return
+        val i = p.currentMediaItemIndex
+        val url = urls.getOrNull(i) ?: return
+        History.record(this, url, titles.getOrNull(i) ?: "", seriesNames.getOrNull(i) ?: "")
+    }
+
     private fun togglePlay() {
         val p = player ?: return
         if (p.playWhenReady) p.pause() else p.play()
@@ -529,7 +544,7 @@ class PlayerActivity : Activity() {
 
     private fun applySpeed() {
         player?.playbackParameters = PlaybackParameters(speeds[speedIndex], 1f)
-        Prefs.setSpeedIndex(this, speedIndex)
+        Prefs.setSpeed(this, speeds[speedIndex])
         paintBannerButtons()
         updateStats()
         showBanner()

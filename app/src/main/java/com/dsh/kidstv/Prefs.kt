@@ -51,11 +51,11 @@ object Prefs {
             .apply()
     }
 
-    /** 上次选的倍速（0.75× 起，索引 1 = 1.0×） */
-    fun speedIndex(c: Context): Int = sp(c).getInt("speed", 1)
+    /** 上次选的倍速值（1.0 = 原速）。存值而不是索引，加减档位时不会错位 */
+    fun speed(c: Context): Float = sp(c).getFloat("speed_v", 1f)
 
-    fun setSpeedIndex(c: Context, i: Int) {
-        sp(c).edit().putInt("speed", i).apply()
+    fun setSpeed(c: Context, v: Float) {
+        sp(c).edit().putFloat("speed_v", v).apply()
     }
 
     fun clear(c: Context) {

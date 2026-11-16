@@ -99,6 +99,8 @@ class MainActivity : Activity() {
     private var seriesOf: Map<String, String> = emptyMap()
     /** 系列 -> 用来抽封面的那一集（每个系列只抽一次） */
     private var coverUrlFor: Map<String, String> = emptyMap()
+    /** url -> Video，历史卡片查封面用 */
+    private var videoByUrl: Map<String, Video> = emptyMap()
     /** 从哪个系列点进去的，返回时把焦点放回去 */
     private var expandedFrom: Int = 0
 
@@ -600,12 +602,16 @@ class MainActivity : Activity() {
             return
         }
         watchRowBinds.clear()
-        selectedWatch = 0
+        // 刷新后尽量停回原来那一集，而不是跳回第一行
+        val keepUrl = previewUrl
+        selectedWatch = keepUrl?.let { u -> shown.indexOfFirst { it.url == u } }?.takeIf { it >= 0 } ?: 0
+        // 搜索时不显示"最近看过"，免得干扰结果
+        if (q.isEmpty()) addRecentStrip()
         shown.forEachIndexed { i, v -> watchList.addView(watchRow(v, i)) }
         watchRowBinds.forEachIndexed { i, bind -> bind(i == selectedWatch) }
         if (tab == 0) {
-            watchList.post { watchList.getChildAt(0)?.requestFocus() }
-            shown.firstOrNull()?.let { showPreview(it, force = true) }
+            watchList.post { watchList.getChildAt(selectedWatch)?.requestFocus() }
+            shown.getOrNull(selectedWatch)?.let { showPreview(it, force = true) }
         }
     }
 
@@ -704,6 +710,72 @@ class MainActivity : Activity() {
     private var selectedWatch = 0
     /** 每一行怎么根据选中状态重绘自己 */
     private val watchRowBinds = ArrayList<(Boolean) -> Unit>()
+
+    /** 顶部「最近看过」横向条 */
+    private fun addRecentStrip() {
+        val items = History.load(this)
+        if (items.isEmpty()) return
+        watchList.addView(
+            label("最近看过", if (compact) 12 else 15, Palette.ink2, display = true).apply {
+                setPadding(dp(8), dp(2), 0, dp(6))
+            }
+        )
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+        }
+        items.take(12).forEach { h -> row.addView(recentCard(h)) }
+        val strip = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(row, WRAP_CONTENT, WRAP_CONTENT)
+        }
+        watchList.addView(
+            strip,
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(12) }
+        )
+    }
+
+    private fun recentCard(h: HistoryItem): View {
+        val w = dp(if (compact) 132 else 176)
+        val hgt = w * 9 / 16
+        val card = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(w, hgt).apply { rightMargin = dp(10) }
+            background = shape(Palette.cover(h.url.hashCode()), dp(10).toFloat())
+            clipToOutline = true
+            isFocusable = true
+            isClickable = true
+            noDefaultFocusRing()
+        }
+        val img = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+        card.addView(img, MATCH_PARENT, MATCH_PARENT)
+        videoByUrl[h.url]?.thumb?.let { url ->
+            val cached = Thumbs.cached(url)
+            if (cached != null) img.setImageBitmap(cached)
+            else Thumbs.load(url, cfg.user, cfg.pass, w, hgt) { bmp -> if (bmp != null) img.setImageBitmap(bmp) }
+        }
+        val caption = label(h.title, if (compact) 10 else 12, Palette.card).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            background = shape(0xCC000000.toInt(), 0f, radii = floatArrayOf(0f, 0f, 0f, 0f, dp(10).toFloat(), dp(10).toFloat(), 0f, 0f))
+        }
+        card.addView(caption, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
+        card.setOnFocusChangeListener { v, has ->
+            v.animate().scaleX(if (has) 1.05f else 1f).scaleY(if (has) 1.05f else 1f).setDuration(120).start()
+        }
+        card.setOnClickListener {
+            val sec = sections.firstOrNull { s -> s.videos.any { it.url == h.url } }
+            if (sec != null) {
+                val i = sec.videos.indexOfFirst { it.url == h.url }
+                playList(sec.videos, i.coerceAtLeast(0))
+            } else {
+                playList(listOf(Video(h.title, h.url, null)), 0)
+            }
+        }
+        return card
+    }
 
     /** 手机上点一行：只切换预览，不直接播 */
     private fun selectRow(index: Int) {
@@ -1447,7 +1519,7 @@ class MainActivity : Activity() {
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    Library.scan(cfg) { step ->
+                    Library.scan(this@MainActivity, cfg) { step ->
                         scanStep = step
                         runOnUiThread {
                             subtitle.text = scanText()
@@ -1509,11 +1581,21 @@ class MainActivity : Activity() {
         coverUrlFor = list.mapNotNull { sec ->
             sec.videos.firstOrNull()?.let { sec.title to it.url }
         }.toMap()
+        videoByUrl = list.flatMap { it.videos }.associateBy { it.url }
         val flat = list.flatMap { it.videos }
         subtitle.text = "${list.size} 个目录 · ${flat.size} 集"
-        renderWatch(flat.shuffled().take(if (compact) 30 else 40))
+        // 随机顺序按"本地日期"固定：同一天怎么刷新都一样，孩子能找到刚看的那集；
+        // 跨天自动换一批。素材变了列表自然会变。
+        renderWatch(flat.shuffled(dayRandom()).take(if (compact) 30 else 40))
         renderAll(list)
         paintTabs()
+    }
+
+    /** 以本地日期为种子的随机源 */
+    private fun dayRandom(): kotlin.random.Random {
+        val now = System.currentTimeMillis()
+        val offset = java.util.TimeZone.getDefault().getOffset(now)
+        return kotlin.random.Random((now + offset) / 86_400_000L)
     }
 
     private fun renderDemo() {
@@ -1622,6 +1704,7 @@ class MainActivity : Activity() {
         val intent = Intent(this, PlayerActivity::class.java)
         intent.putStringArrayListExtra("urls", ArrayList(list.map { it.url }))
         intent.putStringArrayListExtra("titles", ArrayList(list.map { it.title }))
+        intent.putStringArrayListExtra("series", ArrayList(list.map { seriesOf[it.url] ?: "" }))
         intent.putStringArrayListExtra("subs", ArrayList(list.map { it.sub ?: "" }))
         intent.putExtra("index", index)
         startActivity(intent)
