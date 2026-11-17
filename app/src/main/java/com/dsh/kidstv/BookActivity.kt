@@ -1,6 +1,7 @@
 package com.dsh.kidstv
 
 import android.app.Activity
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
@@ -46,6 +47,7 @@ class BookActivity : Activity() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var renderer: PdfRenderer? = null
+    private var bookUrl: String = ""
     private var pfd: ParcelFileDescriptor? = null
     private var pageCount = 0
     private var page = 0
@@ -69,6 +71,7 @@ class BookActivity : Activity() {
         setContentView(buildUi())
 
         val url = intent.getStringExtra("url").orEmpty()
+        bookUrl = url
         val title = intent.getStringExtra("title").orEmpty()
         titleLabel.text = title
         if (url.isBlank()) {
@@ -167,7 +170,7 @@ class BookActivity : Activity() {
                     status.visibility = View.GONE
                     bar.visibility = View.GONE
                     pageLabel.visibility = View.VISIBLE
-                    showPage(0)
+                    showPage(savedPage())
                     return@launch
                 }
                 val file = withContext(Dispatchers.IO) {
@@ -187,12 +190,25 @@ class BookActivity : Activity() {
                 withContext(Dispatchers.IO) { open(file) }
                 status.visibility = View.GONE
                 bar.visibility = View.GONE
-                showPage(0)
+                showPage(savedPage())
             } catch (e: Exception) {
                 status.visibility = View.VISIBLE
                 status.text = "打不开这本绘本\n${e.message ?: "未知错误"}"
             }
         }
+    }
+
+    /** 这本书上次读到第几页；读到最后一页就从第一页重新开始 */
+    private fun savedPage(): Int {
+        val sp = getSharedPreferences("reading", Context.MODE_PRIVATE)
+        val p = sp.getInt(bookUrl, 0)
+        return if (pageCount > 0 && p >= pageCount - 1) 0 else p
+    }
+
+    private fun saveReadingProgress(index: Int) {
+        if (bookUrl.isBlank()) return
+        getSharedPreferences("reading", Context.MODE_PRIVATE)
+            .edit().putInt(bookUrl, index).apply()
     }
 
     private fun open(file: File) {
@@ -210,6 +226,8 @@ class BookActivity : Activity() {
     private fun showPage(index: Int) {
         if (index < 0 || index >= pageCount) return
         page = index
+        // 读到第几页存下来，下次打开同一本从这一页继续
+        saveReadingProgress(index)
         if (pages.isNotEmpty()) {
             showImagePage(index)
             return

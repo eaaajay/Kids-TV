@@ -156,13 +156,6 @@ class DavClient(private val cfg: NasConfig) {
 
         private fun normalize(h: String) = decodeSeg(h.trimEnd('/'))
 
-        val client: OkHttpClient by lazy {
-            OkHttpClient.Builder()
-                .connectTimeout(8, TimeUnit.SECONDS)
-                .readTimeout(25, TimeUnit.SECONDS)
-                .writeTimeout(20, TimeUnit.SECONDS)
-                .retryOnConnectionFailure(true)
-                .build()
-        }
+        val client: OkHttpClient get() = Net.client
     }
 }

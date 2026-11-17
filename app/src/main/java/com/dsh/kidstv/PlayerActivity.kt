@@ -33,6 +33,7 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.TransferListener
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -86,11 +87,25 @@ class PlayerActivity : Activity() {
     private var resumeAfterPause = false
 
     private val hideBanner = Runnable { fadeOutBanner() }
+    private var lastProgressWrite = 0L
+
     private val ticker = object : Runnable {
         override fun run() {
             updateStats()
+            // 每 15 秒记一次进度，别把电视闪存写穿
+            val now = System.currentTimeMillis()
+            if (now - lastProgressWrite >= 15_000L) {
+                lastProgressWrite = now
+                recordProgress()
+            }
             ui.postDelayed(this, 1000)
         }
+    }
+
+    private fun recordProgress() {
+        val p = player ?: return
+        val url = urls.getOrNull(p.currentMediaItemIndex) ?: return
+        History.recordProgress(this, url, p.currentPosition, p.duration)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -440,8 +455,19 @@ class PlayerActivity : Activity() {
 
         // DefaultDataSource 让 file:// 演示片和 http(s):// NAS 视频走同一套播放器
         val base = DefaultDataSource.Factory(this, dataSource)
+        // 中继偶尔抖：起播 1s、缓冲 10–25s、播中续 2s，默认的太容易卡
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 10_000,
+                /* maxBufferMs = */ 25_000,
+                /* bufferForPlaybackMs = */ 1_000,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_000
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(base))
+            .setLoadControl(loadControl)
             .build()
 
         exo.setAudioAttributes(
@@ -456,6 +482,8 @@ class PlayerActivity : Activity() {
                 spinner.visibility = if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
                 if (state == Player.STATE_ENDED) {
                     if (exo.hasNextMediaItem()) {
+                        // 这一集放完了：位置归零，下次从头放
+                        urls.getOrNull(exo.currentMediaItemIndex)?.let { History.recordFinished(this@PlayerActivity, it) }
                         exo.seekToNextMediaItem()
                         exo.play()
                         showBanner()
@@ -502,7 +530,10 @@ class PlayerActivity : Activity() {
                     .build()
             }
         }
-        exo.setMediaItems(items, startIndex, 0L)
+        // 有观看记录就从上次的位置接着放（片头 <30s 就从头放）
+        val resumeMs = History.positionFor(this, urls.getOrNull(startIndex).orEmpty())
+            ?.positionMs?.let { if (it < 30_000L) 0L else it } ?: 0L
+        exo.setMediaItems(items, startIndex, resumeMs)
         exo.playbackParameters = PlaybackParameters(speeds[speedIndex], 1f)
         // 有字幕就默认选上英文轨；没字幕时这段没有副作用
         exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
@@ -741,6 +772,8 @@ class PlayerActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        recordProgress()
+        History.flush(this)
         resumeAfterPause = player?.playWhenReady == true
         player?.pause()
         showBanner()

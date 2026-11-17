@@ -721,7 +721,8 @@ class MainActivity : Activity() {
 
     /** 顶部「最近看过」横向条 */
     private fun addRecentStrip() {
-        val items = History.load(this)
+        // 快看完的（>95%）不再提示"继续看"
+        val items = History.load(this).filterNot { it.nearlyFinished }
         if (items.isEmpty()) return
         watchList.addView(
             label("继续看", if (compact) 13 else 18, Palette.ink, display = true).apply {
@@ -764,6 +765,31 @@ class MainActivity : Activity() {
             if (cached != null) img.setImageBitmap(cached)
             else Thumbs.load(url, cfg.user, cfg.pass, w, hgt) { bmp -> if (bmp != null) img.setImageBitmap(bmp) }
         }
+        // 底部小进度条：看过多少一眼能看出来
+        if (h.positionMs > 0L) {
+            val pct = (h.fraction * 100).toInt()
+            val timeText = if (h.durationMs > 0) {
+                val m = h.positionMs / 60000
+                val total = h.durationMs / 60000
+                "看到 ${m}/${total} 分钟"
+            } else "看过"
+            card.addView(
+                label(timeText, if (compact) 9 else 11, Palette.paper).apply {
+                    gravity = Gravity.END
+                    setPadding(dp(8), dp(3), dp(8), 0)
+                    setShadowLayer(2f, 0f, 1f, 0xCC000000.toInt())
+                },
+                FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM)
+            )
+            val track = View(this).apply { setBackgroundColor(0x33FFFFFF) }
+            val fill = View(this).apply { setBackgroundColor(Palette.coral) }
+            card.addView(track, FrameLayout.LayoutParams(MATCH_PARENT, dp(3), Gravity.BOTTOM))
+            card.addView(
+                fill,
+                FrameLayout.LayoutParams((w * h.fraction).toInt().coerceAtLeast(dp(4)), dp(3), Gravity.BOTTOM)
+            )
+        }
+
         val caption = label(h.title, if (compact) 10 else 12, Palette.card).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
@@ -845,6 +871,10 @@ class MainActivity : Activity() {
         val base = DefaultDataSource.Factory(this, http)
         val p = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(base))
+            .build()
+        // 预览只是小窗：解码 4K 纯粹浪费，限到 540p
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setMaxVideoSize(960, 540)
             .build()
         p.volume = 0f
         p.repeatMode = Player.REPEAT_MODE_ONE
@@ -1128,6 +1158,9 @@ class MainActivity : Activity() {
             if (has) refreshChips()
         }
 
+        // 搜索防抖：输入法每敲一个字母都触发一次全量过滤，
+        // 长列表会卡。停笔 150ms 再筛；清空（length=0）要立即恢复列表，不延迟。
+        var searchJob: Runnable? = null
         box.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
@@ -1135,7 +1168,11 @@ class MainActivity : Activity() {
                 clear.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
                 chipScroller.visibility =
                     if (s.isNullOrEmpty() && SearchHistory.load(this@MainActivity).isNotEmpty()) View.VISIBLE else View.GONE
-                onChange(s?.toString() ?: "")
+                val text = s?.toString() ?: ""
+                searchJob?.let { handler.removeCallbacks(it) }
+                val job = Runnable { onChange(text) }
+                searchJob = job
+                handler.postDelayed(job, if (text.isEmpty()) 0L else 150L)
             }
         })
 

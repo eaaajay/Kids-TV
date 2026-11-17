@@ -19,8 +19,7 @@ import java.util.concurrent.TimeUnit
  */
 object BookCache {
 
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
+    private val http: OkHttpClient get() = Net.client.newBuilder()
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
@@ -29,7 +28,11 @@ object BookCache {
     private val inflight = HashSet<String>()
     private val lock = Any()
 
-    private fun dir(ctx: Context): File = File(ctx.cacheDir, "books").apply { mkdirs() }
+    private fun dir(ctx: Context): File {
+        val d = File(ctx.cacheDir, "books").apply { mkdirs() }
+        CacheTrim.trim(d, 500)
+        return d
+    }
 
     fun fileFor(ctx: Context, url: String): File =
         File(dir(ctx), sha1(url) + ".pdf")

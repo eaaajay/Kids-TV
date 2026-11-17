@@ -42,15 +42,12 @@ object Frames {
     @Volatile
     private var disabled = false
 
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .build()
-    }
+    private val client: OkHttpClient get() = Net.client
 
     fun init(ctx: Context) {
         if (dir == null) dir = File(ctx.cacheDir, "frames").apply { mkdirs() }
+        // 抽帧图比缩略图大，给 200MB 上限
+        dir?.let { CacheTrim.trim(it, 200) }
     }
 
     fun cached(url: String): Bitmap? = mem.get(url)

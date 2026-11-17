@@ -34,17 +34,14 @@ object Thumbs {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .build()
-    }
+    private val client: OkHttpClient get() = Net.client
 
     fun init(ctx: Context) {
         if (dir == null) {
             dir = File(ctx.cacheDir, "thumbs").apply { mkdirs() }
         }
+        // 缩略图最多 100MB，超过按最老先删
+        dir?.let { CacheTrim.trim(it, 100) }
     }
 
     fun cached(url: String): Bitmap? = mem.get(url)
