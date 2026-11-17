@@ -813,12 +813,14 @@ class MainActivity : Activity() {
             previewSeries.text = seriesOf[v.url].orEmpty().ifBlank { "随心看" }
             previewEpisode.text = v.title
         }
+        // 先把播放器（PlayerView）挪到当前容器的位置，再判断要不要换片源 ——
+        // 否则两个 tab 预览同一集时，画面会留在上一个 tab 里
+        val p = ensurePreviewPlayer()
         if (!force && currentPreview == v.url) return
         currentPreview = v.url
         previewJob?.cancel()
         previewJob = scope.launch {
             delay(if (force) 0L else 260L)
-            val p = ensurePreviewPlayer()
             p.setMediaItem(MediaItem.fromUri(v.url))
             p.prepare()
             p.play()
