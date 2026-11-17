@@ -35,6 +35,7 @@ class ParentPanel(
     private lateinit var statusView: TextView
     private lateinit var urlView: TextView
     private lateinit var configView: TextView
+    private lateinit var crashView: TextView
     private val ui = Handler(Looper.getMainLooper())
     private val compact: Boolean get() = resources.configuration.screenWidthDp < 600
 
@@ -109,12 +110,18 @@ class ParentPanel(
         configView = ctx.label(describe(Prefs.load(ctx)), if (compact) 12 else 14, Palette.ink3)
         box.addView(configView)
 
+        crashView = ctx.label("", if (compact) 11 else 13, Palette.coral).apply {
+            setPadding(0, dp(16), 0, 0)
+            visibility = View.GONE
+        }
+        box.addView(crashView)
+
         box.addView(
             ctx.label(
                 "视频目录与绘本目录分别扫描；视频旁放同名 .jpg 可作封面。\n" +
                     "配好后切回上面的「随心看」或「视频目录」即可。",
                 if (compact) 12 else 14, Palette.ink3
-            ).apply { setPadding(0, dp(22), 0, 0) }
+            ).apply { setPadding(0, dp(18), 0, 0) }
         )
         return box
     }
@@ -125,6 +132,7 @@ class ParentPanel(
         active = true
         delivered = null
         configView.text = describe(Prefs.load(ctx))
+        refreshCrash()
         startServer()
         ui.post(poller)
     }
@@ -135,6 +143,17 @@ class ParentPanel(
         ui.removeCallbacks(poller)
         server?.stop()
         server = null
+    }
+
+    /** 上次崩溃信息（没有就藏起来） */
+    private fun refreshCrash() {
+        val info = CrashLog.last(ctx)
+        if (info.isNullOrBlank()) {
+            crashView.visibility = View.GONE
+        } else {
+            crashView.visibility = View.VISIBLE
+            crashView.text = "上次闪退：\n$info"
+        }
     }
 
     private fun showSaved(cfg: NasConfig) {

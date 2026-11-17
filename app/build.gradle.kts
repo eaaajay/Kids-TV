@@ -5,14 +5,18 @@ plugins {
 
 android {
     namespace = "com.dsh.kidstv"
+    buildFeatures {
+        // CrashLog 要写版本号，方便事后确认是哪个包崩的
+        buildConfig = true
+    }
     compileSdk = 35
 
     defaultConfig {
         applicationId = "com.dsh.kidstv"
         minSdk = 23
         targetSdk = 34
-        versionCode = 22
-        versionName = "1.9.0"
+        versionCode = 23
+        versionName = "1.9.1"
     }
 
     // 签名文件不进仓库；扔一个 kidstv.jks 到项目根目录就能出正式包，

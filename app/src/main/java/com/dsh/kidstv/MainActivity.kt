@@ -32,6 +32,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -140,6 +141,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(this)
         Thumbs.init(this)
         Frames.init(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -814,13 +816,17 @@ class MainActivity : Activity() {
 
     private fun ensurePreviewPlayer(): ExoPlayer {
         val host = previewHost ?: previewBox
-        previewPlayer?.let {
+        previewPlayer?.let { player ->
             val pv = previewView
             if (pv != null && pv.parent !== host) {
+                // 换容器时先把 player 摘掉：带着正在渲染的 surface 直接 remove/add，
+                // 部分电视会黑屏甚至 native crash
+                pv.player = null
                 (pv.parent as? ViewGroup)?.removeView(pv)
                 host.addView(pv, MATCH_PARENT, MATCH_PARENT)
+                pv.player = player
             }
-            return it
+            return player
         }
         val http = DefaultHttpDataSource.Factory()
             .setDefaultRequestProperties(authHeaders())
@@ -834,11 +840,20 @@ class MainActivity : Activity() {
         p.volume = 0f
         p.repeatMode = Player.REPEAT_MODE_ONE
         p.playWhenReady = true
+        p.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                // 预览只是锦上添花：解不了码就让这一格空着，别影响列表和播放
+                android.util.Log.w("Preview", "预览失败：${error.errorCodeName}", error)
+                currentPreview = null
+                runCatching { p.stop() }
+            }
+        })
 
-        val pv = PlayerView(this).apply {
+        // 从 XML 里取：只有 XML 才能指定 surface_type=texture_view（可以安全换父容器）
+        val pv = layoutInflater.inflate(R.layout.preview_player, host, false) as PlayerView
+        pv.apply {
             useController = false
             setShutterBackgroundColor(Palette.bg)
-            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
             player = p
             // 预览层盖在 previewBox 上面，点击得挂它自己，否则父布局收不到
             isClickable = true
