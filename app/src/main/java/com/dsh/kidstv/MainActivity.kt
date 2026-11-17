@@ -133,7 +133,6 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Thumbs.init(this)
-        Speaker.init(this)
         Frames.init(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemUi()
@@ -191,13 +190,11 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        Speaker.stop()
         previewPlayer?.pause()
     }
 
     override fun onDestroy() {
         scope.cancel()
-        Speaker.shutdown()
         previewView?.player = null
         previewPlayer?.release()
         previewPlayer = null
@@ -694,7 +691,6 @@ class MainActivity : Activity() {
             if (has) {
                 selectedWatch = index
                 showPreview(v)
-                Speaker.say(v.title)
             }
         }
         // 触摸：点一行只是"选中"并预览；播放交给大画面或「全屏播放」
@@ -1326,7 +1322,6 @@ class MainActivity : Activity() {
                 dp(if (has) 5 else 2),
                 if (has) Palette.ink else Palette.paper2
             )
-            if (has) Speaker.say(title)
             onFocus?.invoke(has)
         }
         frame.setOnClickListener { onClick() }
@@ -1477,10 +1472,7 @@ class MainActivity : Activity() {
 
         frame.setOnFocusChangeListener { v, has ->
             // 焦点到这本就先下载，点开基本秒开
-            if (has) {
-                BookCache.prefetch(this, book.url)
-                Speaker.say(book.title)
-            }
+            if (has) BookCache.prefetch(this, book.url)
             v.animate().scaleX(if (has) 1.04f else 1f).scaleY(if (has) 1.04f else 1f)
                 .setDuration(120).start()
             v.elevation = dp(if (has) 14 else 2).toFloat()
