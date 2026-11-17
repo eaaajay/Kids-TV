@@ -11,8 +11,8 @@ android {
         applicationId = "com.dsh.kidstv"
         minSdk = 23
         targetSdk = 34
-        versionCode = 18
-        versionName = "1.7.1"
+        versionCode = 19
+        versionName = "1.7.2"
     }
 
     // 签名文件不进仓库；扔一个 kidstv.jks 到项目根目录就能出正式包，

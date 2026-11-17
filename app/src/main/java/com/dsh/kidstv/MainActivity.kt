@@ -13,6 +13,7 @@ import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -72,6 +73,8 @@ class MainActivity : Activity() {
     private var scanTicker: Runnable? = null
     private val handler = Handler(Looper.getMainLooper())
     private var seriesRenderJob: Runnable? = null
+    /** 这次按键是不是左右方向键：用来判断 tab 焦点是「横移过来的」还是「下往上顶过来的」 */
+    private var horizontalKey = false
     private var searchBooks: LinearLayout? = null
     private var videoQuery: String = ""
     private var bookQuery: String = ""
@@ -374,7 +377,30 @@ class MainActivity : Activity() {
             setOnClickListener { switchTab(index) }
             // 焦点一到 tab 就切页，不用再按 OK
             setOnFocusChangeListener { _, hasFocus ->
-                if (hasFocus && !rebuilding && tab != index) switchTab(index) else paintTabs()
+                if (!hasFocus) {
+                    paintTabs()
+                    return@setOnFocusChangeListener
+                }
+                if (rebuilding) {
+                    paintTabs()
+                    return@setOnFocusChangeListener
+                }
+                if (horizontalKey) {
+                    // 左右键在 tab 之间移动：焦点到哪就切到哪，保持一碰就切的手感
+                    if (tab != index) switchTab(index) else paintTabs()
+                } else {
+                    // 从内容区按 ↑ 上来的：把焦点拉回当前 tab，
+                    // 否则会落到最左边的「随心看」上，直接把页面切走
+                    val current = when (tab) {
+                        0 -> tabWatch
+                        1 -> tabAll
+                        else -> tabBooks
+                    }
+                    if (current !== this) {
+                        current.post { current.requestFocus() }
+                    }
+                    paintTabs()
+                }
             }
         }
         val lp = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
@@ -397,6 +423,14 @@ class MainActivity : Activity() {
                 dp(24).toFloat()
             )
         }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            horizontalKey = event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+                event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private fun switchTab(index: Int) {
