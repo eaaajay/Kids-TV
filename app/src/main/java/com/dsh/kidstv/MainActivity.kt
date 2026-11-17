@@ -71,6 +71,7 @@ class MainActivity : Activity() {
     private var scanStartAt: Long = 0L
     private var scanTicker: Runnable? = null
     private val handler = Handler(Looper.getMainLooper())
+    private var seriesRenderJob: Runnable? = null
     private var searchBooks: LinearLayout? = null
     private var videoQuery: String = ""
     private var bookQuery: String = ""
@@ -1142,17 +1143,24 @@ class MainActivity : Activity() {
             isClickable = true
             noDefaultFocusRing()
             setOnFocusChangeListener { _, has ->
-                if (has && selectedSeries != index) {
+                if (!has) return@setOnFocusChangeListener
+                if (selectedSeries != index) {
                     selectedSeries = index
-                    renderEpisodes(shown, shown[index])
                     paintSeriesTabs()
-                } else if (has) {
+                    // 遥控器连按时焦点会快速划过一串 tab：
+                    // 停 90ms 再渲染，划过去的那些不白建列表（否则大系列要卡好几秒）
+                    seriesRenderJob?.let { handler.removeCallbacks(it) }
+                    val job = Runnable { renderEpisodes(shown, shown[index]) }
+                    seriesRenderJob = job
+                    handler.postDelayed(job, 90)
+                } else {
                     paintSeriesTabs()
                 }
             }
             setOnClickListener {
+                seriesRenderJob?.let { handler.removeCallbacks(it) }
                 selectedSeries = index
-                renderEpisodes(shown, shown[index])
+                renderEpisodes(shown, shown[index], grabFocus = true)
                 paintSeriesTabs()
             }
         }
@@ -1170,13 +1178,18 @@ class MainActivity : Activity() {
         seriesTabBinds.forEachIndexed { i, bind -> bind(i == selectedSeries) }
     }
 
-    private fun renderEpisodes(shown: List<Section>, sec: Section) {
+    private fun renderEpisodes(shown: List<Section>, sec: Section, grabFocus: Boolean = false) {
+        val same = libSection === sec && episodeList.childCount == sec.videos.size && sec.videos.isNotEmpty()
         libSection = sec
-        libIndex = 0
-        episodeList.removeAllViews()
-        sec.videos.forEachIndexed { i, v -> episodeList.addView(libRow(sec, v, i)) }
-        if (sec.videos.isNotEmpty()) showLibPreview(sec, 0)
-        if (tab == 1) episodeList.post { episodeList.getChildAt(0)?.requestFocus() }
+        if (!same) {
+            libIndex = 0
+            episodeList.removeAllViews()
+            sec.videos.forEachIndexed { i, v -> episodeList.addView(libRow(sec, v, i)) }
+        }
+        if (sec.videos.isNotEmpty()) showLibPreview(sec, libIndex.coerceIn(0, sec.videos.size - 1))
+        // 只有「按 OK 选定这个系列」才把焦点送进分集列表；
+        // 遥控器左右滑过 tab 时如果也抢焦点，就会一格都滑不动，直接被拽下来。
+        if (grabFocus && tab == 1) episodeList.post { episodeList.getChildAt(0)?.requestFocus() }
     }
 
     /** 视频目录里的分集行：序号 + 封面 + 集名 */
