@@ -10,14 +10,23 @@ import android.util.TypedValue
 import android.view.View
 import android.widget.TextView
 
+/**
+ * 深色影院风：近黑底 + 浅色字 + 珊瑚强调。
+ * 命名沿用旧的（paper = 页面背景，ink = 主文字），这样改动最小：
+ * 反相后「ink 当文字、paper 当背景」的旧代码自动成立，
+ * 「ink 当背景」的少数几处（预览遮罩、绘本阅读器）已单独改成 bg。
+ */
 object Palette {
-    const val paper = 0xFFF7EDDC.toInt()
-    const val paper2 = 0xFFEADCC1.toInt()
-    const val card = 0xFFFFFBF4.toInt()
-    const val ink = 0xFF17324D.toInt()
-    const val ink2 = 0xFF5B7186.toInt()
-    const val ink3 = 0xFF93A2B1.toInt()
+    const val bg = 0xFF0E0F11.toInt()
+    const val paper = bg
+    const val paper2 = 0xFF2A2E34.toInt()
+    const val card = 0xFF1A1C1F.toInt()
+    const val ink = 0xFFF2F4F7.toInt()
+    const val ink2 = 0xFFA8B0BA.toInt()
+    const val ink3 = 0xFF6E7681.toInt()
     const val coral = 0xFFE85C43.toInt()
+    /** 强调色上的文字（深色） */
+    const val onAccent = 0xFF101114.toInt()
     const val leaf = 0xFF2F8F6F.toInt()
     const val sun = 0xFFF0B03C.toInt()
     const val sky = 0xFF4E9BC9.toInt()
@@ -82,7 +91,7 @@ fun Context.label(
 /** 桌面背景：暖纸色 + 极淡的网格圆点，像一本练习本。 */
 class DottedPaperView(ctx: Context) : View(ctx) {
     private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x33B79A6E
+        color = 0x14FFFFFF
         style = Paint.Style.FILL
     }
     private val step = ctx.dp(48)

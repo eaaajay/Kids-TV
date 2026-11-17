@@ -79,11 +79,11 @@ class BookActivity : Activity() {
     }
 
     private fun buildUi(): View {
-        val root = FrameLayout(this).apply { setBackgroundColor(Palette.ink) }
+        val root = FrameLayout(this).apply { setBackgroundColor(Palette.bg) }
 
         image = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(Palette.ink)
+            setBackgroundColor(Palette.bg)
         }
         root.addView(image, MATCH_PARENT, MATCH_PARENT)
 

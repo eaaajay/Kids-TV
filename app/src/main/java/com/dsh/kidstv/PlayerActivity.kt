@@ -129,7 +129,7 @@ class PlayerActivity : Activity() {
 
         playerView = PlayerView(this).apply {
             useController = false
-            setShutterBackgroundColor(Color.BLACK)
+            setShutterBackgroundColor(Palette.bg)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             keepScreenOn = true
         }
