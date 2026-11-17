@@ -52,12 +52,6 @@
             android:launchMode="singleTask"
             android:theme="@style/PlayerTheme" />
 
-        <activity
-            android:name=".SetupActivity"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|navigation"
-            android:exported="false"
-            android:screenOrientation="landscape" />
-
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"

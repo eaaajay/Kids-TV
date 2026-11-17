@@ -58,9 +58,11 @@ class MainActivity : Activity() {
     private lateinit var tabWatch: TextView
     private lateinit var tabAll: TextView
     private lateinit var tabBooks: TextView
+    private lateinit var tabParent: TextView
     private lateinit var pageWatch: View
     private lateinit var pageAll: View
     private lateinit var pageBooks: View
+    private lateinit var pageParent: ParentPanel
     private lateinit var booksHost: LinearLayout
     private lateinit var watchList: LinearLayout
     private lateinit var allHost: LinearLayout
@@ -157,11 +159,8 @@ class MainActivity : Activity() {
             refresh()
         } else {
             renderDemo()
-            // 还没配置 NAS：直接把「家长设置」推到最前面。
-            // 电视上用遥控器摸焦点太痛苦，这一步省掉；手机上填完按返回就进视频墙。
-            if (savedInstanceState == null) {
-                startActivity(Intent(this, SetupActivity::class.java))
-            }
+            // 还没配置 NAS：直接展示内嵌的家长页，不再另起一个 Activity。
+            if (savedInstanceState == null) switchTab(3)
         }
     }
 
@@ -172,31 +171,37 @@ class MainActivity : Activity() {
         // 整份配置比对，不能只比 cacheKey（scheme+host+port+path）：
         // 只改账号或密码时地址没变，旧代码会一直拿旧密码去请求，只有杀进程才生效。
         val now = Prefs.load(this)
-        if (now != cfg) {
-            cfg = now
-            booksLoaded = false
-            books = emptyList()
-            currentPreview = null
-            if (now.ready) {
-                if (!showCached()) showSplash()
-                refresh()
-            } else {
-                // 家长把 NAS 清空了：退回演示墙，别继续显示上一份内容
-                sections = emptyList()
-                seriesOf = emptyMap()
-                renderDemo()
-            }
-            // 停在绘本页时也要跟着换掉旧 NAS 的书（否则卡片还在，点开却全是旧地址）
-            if (tab == 2) loadBooks()
+        if (now != cfg) applyConfig(now)
+        if (tab == 3) pageParent.onShow()
+    }
+
+    /** 家长页保存配置后，不退出主页也能立即重扫。 */
+    private fun applyConfig(now: NasConfig) {
+        cfg = now
+        booksLoaded = false
+        books = emptyList()
+        currentPreview = null
+        if (now.ready) {
+            if (!showCached()) showSplash()
+            refresh()
+        } else {
+            // 家长把 NAS 清空了：退回演示墙，别继续显示上一份内容
+            sections = emptyList()
+            seriesOf = emptyMap()
+            renderDemo()
         }
+        // 停在绘本页时也要跟着换掉旧 NAS 的书（否则卡片还在，点开却全是旧地址）
+        if (tab == 2) loadBooks()
     }
 
     override fun onPause() {
         super.onPause()
         previewPlayer?.pause()
+        pageParent.onHide()
     }
 
     override fun onDestroy() {
+        pageParent.onHide()
         scope.cancel()
         previewView?.player = null
         previewPlayer?.release()
@@ -235,11 +240,14 @@ class MainActivity : Activity() {
         pageWatch = buildWatchPage()
         pageAll = buildAllPage()
         pageBooks = buildBooksPage()
+        pageParent = ParentPanel(this, ::applyConfig)
         content.addView(pageWatch, MATCH_PARENT, MATCH_PARENT)
         content.addView(pageAll, MATCH_PARENT, MATCH_PARENT)
         content.addView(pageBooks, MATCH_PARENT, MATCH_PARENT)
+        content.addView(pageParent, MATCH_PARENT, MATCH_PARENT)
         pageAll.visibility = View.GONE
         pageBooks.visibility = View.GONE
+        pageParent.visibility = View.GONE
 
         paintTabs()
         root.addView(buildSplash(), MATCH_PARENT, MATCH_PARENT)
@@ -331,31 +339,11 @@ class MainActivity : Activity() {
         tabWatch = tabPill("随心看", 0)
         tabAll = tabPill("视频目录", 1)
         tabBooks = tabPill("绘本", 2)
+        tabParent = tabPill("家长", 3)
         tabs.addView(tabWatch)
         tabs.addView(tabAll)
         tabs.addView(tabBooks)
-
-        // 「家长」和其他 tab 排在同一行、同一套尺寸
-        val parent = label("家长", tabTextSize(), Palette.ink2, display = true).apply {
-            setPadding(tabPadH(), tabPadV(), tabPadH(), tabPadV())
-            background = shape(Palette.card, dp(999).toFloat(), dp(1), Palette.paper2)
-            isFocusable = true
-            isClickable = true
-            noDefaultFocusRing()
-            setOnClickListener { askPin() }
-            setOnFocusChangeListener { v, has ->
-                v.background = shape(
-                    if (has) Palette.ink else Palette.card,
-                    dp(999).toFloat(), dp(1), if (has) Palette.ink else Palette.paper2
-                )
-                (v as TextView).setTextColor(if (has) Palette.paper else Palette.ink2)
-                v.scaleX = if (has) 1.06f else 1f
-                v.scaleY = if (has) 1.06f else 1f
-            }
-        }
-        tabs.addView(parent, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-            leftMargin = dp(if (compact) 6 else 10)
-        })
+        tabs.addView(tabParent)
 
         col.addView(tabs, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
         return col
@@ -392,7 +380,8 @@ class MainActivity : Activity() {
                     val current = when (tab) {
                         0 -> tabWatch
                         1 -> tabAll
-                        else -> tabBooks
+                        2 -> tabBooks
+                        else -> tabParent
                     }
                     if (current !== this) {
                         current.post { current.requestFocus() }
@@ -408,7 +397,7 @@ class MainActivity : Activity() {
     }
 
     private fun paintTabs() {
-        listOf(tabWatch to 0, tabAll to 1, tabBooks to 2).forEach { (tv, i) ->
+        listOf(tabWatch to 0, tabAll to 1, tabBooks to 2, tabParent to 3).forEach { (tv, i) ->
             val on = tab == i
             val focused = tv.hasFocus()
             tv.setTextColor(if (focused || on) Palette.paper else Palette.ink2)
@@ -431,6 +420,16 @@ class MainActivity : Activity() {
         return super.dispatchKeyEvent(event)
     }
 
+    override fun onBackPressed() {
+        // 家长页是内嵌的一页，按返回先回到「随心看」，而不是直接退出应用
+        if (tab == 3) {
+            switchTab(0)
+            tabWatch.post { tabWatch.requestFocus() }
+            return
+        }
+        super.onBackPressed()
+    }
+
     private fun switchTab(index: Int) {
         if (tab == index) return
         tab = index
@@ -438,6 +437,7 @@ class MainActivity : Activity() {
         pageWatch.visibility = if (index == 0) View.VISIBLE else View.GONE
         pageAll.visibility = if (index == 1) View.VISIBLE else View.GONE
         pageBooks.visibility = if (index == 2) View.VISIBLE else View.GONE
+        pageParent.visibility = if (index == 3) View.VISIBLE else View.GONE
         // 焦点留在 tab 上：左右键换 tab，OK 选中，按下键进内容区
         previewHost = if (index == 0) previewBox else libPreviewBox
         if (index == 0) {
@@ -450,6 +450,8 @@ class MainActivity : Activity() {
             libSection?.let { sec -> showLibPreview(sec, libIndex) }
         }
         if (index == 2) loadBooks()
+        // 家长页只在可见时开配对服务
+        if (index == 3) pageParent.onShow() else pageParent.onHide()
     }
 
     // ---------------- Tab 1：随心看 ----------------
@@ -1704,11 +1706,6 @@ class MainActivity : Activity() {
         intent.putStringArrayListExtra("subs", ArrayList(list.map { it.sub ?: "" }))
         intent.putExtra("index", index)
         startActivity(intent)
-    }
-
-    /** 家长页不再要 PIN，按一下就进 */
-    private fun askPin() {
-        startActivity(Intent(this, SetupActivity::class.java))
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
