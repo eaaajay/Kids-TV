@@ -105,17 +105,12 @@ class MainActivity : Activity() {
     private var shuffled: List<Video> = emptyList()
     private var tab = 0
 
-    /** 视频目录里点开某个系列后的状态；null 表示还在系列列表 */
-    private var expanded: Section? = null
     /** 每集属于哪个系列（随心看只拿得到扁平列表） */
     private var seriesOf: Map<String, String> = emptyMap()
     /** 系列 -> 用来抽封面的那一集（每个系列只抽一次） */
     private var coverUrlFor: Map<String, String> = emptyMap()
     /** url -> Video，历史卡片查封面用 */
     private var videoByUrl: Map<String, Video> = emptyMap()
-    /** 从哪个系列点进去的，返回时把焦点放回去 */
-    private var expandedFrom: Int = 0
-
     private var previewPlayer: ExoPlayer? = null
     private var previewView: PlayerView? = null
     private var previewJob: Job? = null
@@ -132,11 +127,6 @@ class MainActivity : Activity() {
         Handler(Looper.getMainLooper()).postDelayed({ rebuilding = false }, 700)
     }
 
-    private var pendingSeriesFocus: Int = -1
-    /** 当前打开的系列里，焦点停在第几集（刷新前记下来，刷新后还原） */
-    private var focusedEpisode: Int = -1
-    /** 下一次渲染完要把焦点还给第几集；-1 表示没有待还原的位置 */
-    private var pendingEpisodeFocus: Int = -1
 
     /** 窄屏（手机竖屏）紧凑排版；电视上仍是 10 尺大字 */
     private val compact: Boolean get() = resources.configuration.screenWidthDp < 600
@@ -183,8 +173,6 @@ class MainActivity : Activity() {
             booksLoaded = false
             books = emptyList()
             currentPreview = null
-            pendingSeriesFocus = -1
-            focusedEpisode = -1
             if (now.ready) {
                 if (!showCached()) showSplash()
                 refresh()
@@ -192,7 +180,6 @@ class MainActivity : Activity() {
                 // 家长把 NAS 清空了：退回演示墙，别继续显示上一份内容
                 sections = emptyList()
                 seriesOf = emptyMap()
-                expanded = null
                 renderDemo()
             }
             // 停在绘本页时也要跟着换掉旧 NAS 的书（否则卡片还在，点开却全是旧地址）
@@ -430,43 +417,6 @@ class MainActivity : Activity() {
             libSection?.let { sec -> showLibPreview(sec, libIndex) }
         }
         if (index == 2) loadBooks()
-    }
-
-    private fun focusFirst(host: ViewGroup) {
-        host.post { firstFocusable(host)?.requestFocus() }
-    }
-
-    /** 把焦点给到第 n 个可聚焦控件（系列卡片/剧集卡片按顺序数） */
-    private fun focusNth(host: ViewGroup, n: Int) {
-        host.post {
-            val all = ArrayList<View>()
-            fun walk(g: ViewGroup) {
-                for (i in 0 until g.childCount) {
-                    val c = g.getChildAt(i)
-                    if (c.isFocusable) all.add(c) else if (c is ViewGroup) walk(c)
-                }
-            }
-            walk(host)
-            (all.getOrNull(n) ?: all.firstOrNull())?.requestFocus()
-            rebuilding = false
-        }
-    }
-
-    override fun onBackPressed() {
-        if (expanded != null) {
-            collapse()
-            return
-        }
-        super.onBackPressed()
-    }
-
-    private fun firstFocusable(group: ViewGroup): View? {
-        for (i in 0 until group.childCount) {
-            val c = group.getChildAt(i)
-            if (c.isFocusable) return c
-            if (c is ViewGroup) firstFocusable(c)?.let { return it }
-        }
-        return null
     }
 
     // ---------------- Tab 1：随心看 ----------------
@@ -1302,50 +1252,7 @@ class MainActivity : Activity() {
         showPreview(v)
     }
 
-    /** 视频目录的搜索：只认「系列名」，命中就把系列卡片铺出来，点进去再看分集 */
-    private fun renderSeriesSearch(list: List<Section>, q: String) {
-        val key = q.lowercase()
-        val hits = list.filter { it.title.lowercase().contains(key) }
-
-        if (hits.isEmpty()) {
-            allHost.addView(centered("没有名字包含「$q」的系列", Palette.ink, "点搜索框右边「清空」看全部，剧集名去「随心看」搜"))
-            return
-        }
-
-        allHost.addView(label("找到 ${hits.size} 个系列", if (compact) 12 else 14, Palette.ink2).apply {
-            setPadding(0, 0, 0, dp(12))
-        })
-
-        val perRow = gridColumns
-        hits.chunked(perRow).forEachIndexed { rowIndex, chunk ->
-            val rowView = row(if (compact) 8 else 16)
-            chunk.forEachIndexed { i, sec ->
-                val index = rowIndex * perRow + i
-                rowView.addView(
-                    tile(
-                        title = sec.title,
-                        badge = "${sec.videos.size} 集",
-                        coverUrl = sec.videos.firstNotNullOfOrNull { it.thumb },
-                        initial = sec.title.take(1),
-                        index = index,
-                        onClick = {
-                            if (videoQuery.isNotBlank()) SearchHistory.add(this, videoQuery)
-                            // 点开系列时把搜索清掉，进去就是正常的分集列表
-                            videoQuery = ""
-                            allSearchBox?.setText("")
-                            expand(sec, index)
-                        },
-                        frameUrl = sec.videos.firstOrNull()?.url
-                    )
-                )
-            }
-            allHost.addView(rowView)
-        }
-
-        if (tab == 1 && searchAll?.findFocus() == null) focusNth(allHost, 0)
-    }
-
-    /** 卡片间距 */    /** 卡片间距 */
+    /** 卡片间距 */
     private val gridGap: Int get() = dp(if (compact) 10 else 18)
 
     /** 一行放几张：按可用宽度算，最小卡宽 190dp（手机 170dp），保证不会被裁 */
@@ -1366,68 +1273,6 @@ class MainActivity : Activity() {
         clipChildren = false
         setPadding(0, 0, 0, dp(gap))
     }
-
-    private fun expand(section: Section, fromIndex: Int) {
-        expanded = section
-        expandedFrom = fromIndex
-        focusedEpisode = 0
-        pendingEpisodeFocus = -1
-        renderAll(sections)
-    }
-
-    private fun collapse() {
-        expanded = null
-        pendingSeriesFocus = expandedFrom
-        focusedEpisode = -1
-        pendingEpisodeFocus = -1
-        renderAll(sections)
-    }
-
-    private fun expandHeader(section: Section): View {
-        val line = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(if (compact) 6 else 10), dp(4), dp(if (compact) 10 else 16))
-        }
-        val back = label("← 全部剧集", if (compact) 13 else 17, Palette.ink, display = true).apply {
-            setPadding(
-                dp(if (compact) 14 else 20), dp(if (compact) 8 else 11),
-                dp(if (compact) 14 else 20), dp(if (compact) 8 else 11)
-            )
-            background = shape(Palette.card, dp(999).toFloat(), dp(2), Palette.paper2)
-            isFocusable = true
-            isClickable = true
-            noDefaultFocusRing()
-            setOnClickListener { collapse() }
-            setOnFocusChangeListener { v, has ->
-                (v as TextView).setTextColor(if (has) Palette.paper else Palette.ink)
-                v.background = shape(
-                    if (has) Palette.ink else Palette.card, dp(999).toFloat(), dp(2),
-                    if (has) Palette.ink else Palette.paper2
-                )
-            }
-        }
-        line.addView(back)
-        line.addView(
-            label("${section.title}  ·  ${section.videos.size} 集", if (compact) 13 else 19, Palette.ink2).apply {
-                setPadding(dp(if (compact) 12 else 18), 0, 0, 0)
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-            }
-        )
-        return line
-    }
-
-    private fun seriesCard(section: Section, index: Int): View =
-        tile(
-            title = section.title,
-            badge = "${section.videos.size} 集",
-            coverUrl = section.videos.firstNotNullOfOrNull { it.thumb },
-            initial = section.title.take(1),
-            index = index,
-            onClick = { expand(section, index) },
-            frameUrl = section.videos.firstOrNull()?.url
-        )
 
     /** 有同名封面图就用图；没有就从视频里抽一帧；都不行就留彩色占位 */
     private fun bindCover(img: ImageView, coverUrl: String?, frameUrl: String?, w: Int, h: Int) {
@@ -1452,111 +1297,6 @@ class MainActivity : Activity() {
             if (bmp != null) img.setImageBitmap(bmp)
         }
     }
-
-    private fun card(video: Video, index: Int, section: Section): View =
-        tile(
-            title = video.title,
-            badge = null,
-            coverUrl = video.thumb,
-            initial = video.title.take(1),
-            index = index,
-            onClick = { playList(section.videos, index) },
-            // 记住焦点停在第几集，刷新后按这个位置还原
-            onFocus = { has -> if (has) focusedEpisode = index },
-            frameUrl = coverUrlFor[section.title]
-        )
-
-    private fun tile(
-        title: String,
-        badge: String?,
-        coverUrl: String?,
-        initial: String,
-        index: Int,
-        onClick: () -> Unit,
-        onFocus: ((Boolean) -> Unit)? = null,
-        frameUrl: String? = null
-    ): View {
-        val w = gridCardW
-        val h = w * 9 / 16
-        val radius = dp(if (compact) 14 else 20).toFloat()
-
-        val frame = object : FrameLayout(this) {
-            override fun onMeasure(widthSpec: Int, heightSpec: Int) {
-                super.onMeasure(widthSpec, heightSpec)
-                val width = MeasureSpec.getSize(widthSpec)
-                setMeasuredDimension(width, width * 9 / 16)
-            }
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(w, h).apply {
-                rightMargin = gridGap
-            }
-            isFocusable = true
-            isClickable = true
-            noDefaultFocusRing()
-            clipToOutline = true
-            elevation = dp(2).toFloat()
-            background = shape(Palette.card, radius, dp(2), Palette.paper2)
-        }
-
-        frame.addView(
-            View(this).apply { setBackgroundColor(Palette.cover(index)) },
-            MATCH_PARENT, MATCH_PARENT
-        )
-        frame.addView(
-            label(initial, if (compact) 40 else 64, 0x55FFFFFF, display = true).apply {
-                gravity = Gravity.CENTER
-            },
-            MATCH_PARENT, MATCH_PARENT
-        )
-
-        val img = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-        frame.addView(img, MATCH_PARENT, MATCH_PARENT)
-
-        val caption = label(title, if (compact) 12 else 16, Palette.ink, display = true).apply {
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), 0, dp(if (badge == null) 14 else 56), 0)
-            background = shape(
-                0xF7FFFBF4.toInt(), 0f,
-                radii = floatArrayOf(0f, 0f, 0f, 0f, radius, radius, 0f, 0f)
-            )
-        }
-        frame.addView(
-            caption,
-            FrameLayout.LayoutParams(MATCH_PARENT, dp(if (compact) 34 else 44), Gravity.BOTTOM)
-        )
-        if (badge != null) {
-            frame.addView(
-                label(badge, if (compact) 10 else 13, Palette.ink3).apply {
-                    gravity = Gravity.CENTER_VERTICAL or Gravity.END
-                    setPadding(0, 0, dp(14), 0)
-                },
-                FrameLayout.LayoutParams(WRAP_CONTENT, dp(if (compact) 34 else 44), Gravity.BOTTOM or Gravity.END)
-            )
-        }
-
-        bindCover(img, coverUrl, frameUrl, w, h)
-
-        frame.setOnFocusChangeListener { v, has ->
-            v.animate()
-                .scaleX(if (has) 1.05f else 1f)
-                .scaleY(if (has) 1.05f else 1f)
-                .setDuration(120)
-                .start()
-            v.elevation = dp(if (has) 16 else 2).toFloat()
-            v.background = shape(
-                Palette.card, radius,
-                dp(if (has) 5 else 2),
-                if (has) Palette.ink else Palette.paper2
-            )
-            onFocus?.invoke(has)
-        }
-        frame.setOnClickListener { onClick() }
-        return frame
-    }
-
-    // ---------------- Tab 3：绘本 ----------------
 
     private fun buildBooksPage(): View {
         val page = LinearLayout(this).apply {
@@ -1782,20 +1522,6 @@ class MainActivity : Activity() {
 
     private fun renderData(list: List<Section>) {
         sections = list
-
-        // 刷新（换配置 / 首次扫描 / 缓存回填）时不要把人从打开的系列里弹出去：
-        // 按标题把 expanded 重新绑到这次扫出来的 Section 上，目录真没了才退回系列列表。
-        val openTitle = expanded?.title
-        val openEpisode = focusedEpisode
-        expanded = openTitle?.let { t -> list.firstOrNull { it.title == t } }
-        if (openTitle != null) {
-            if (expanded != null) {
-                pendingEpisodeFocus = openEpisode
-            } else {
-                pendingSeriesFocus = expandedFrom
-                focusedEpisode = -1
-            }
-        }
 
         seriesOf = list.flatMap { sec -> sec.videos.map { it.url to sec.title } }.toMap()
         coverUrlFor = list.mapNotNull { sec ->
