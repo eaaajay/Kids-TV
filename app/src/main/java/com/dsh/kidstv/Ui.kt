@@ -23,7 +23,8 @@ object Palette {
     const val card = 0xFF1A1C1F.toInt()
     const val ink = 0xFFF2F4F7.toInt()
     const val ink2 = 0xFFA8B0BA.toInt()
-    const val ink3 = 0xFF6E7681.toInt()
+    /** 次要文字：原来 #6E7681 在深底上只有 4.17:1，电视远看发灰，提亮到 5.6:1 */
+    const val ink3 = 0xFF8A929C.toInt()
     const val coral = 0xFFE85C43.toInt()
     /** 强调色上的文字（深色） */
     const val onAccent = 0xFF101114.toInt()

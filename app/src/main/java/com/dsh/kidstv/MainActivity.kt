@@ -92,8 +92,12 @@ class MainActivity : Activity() {
     private lateinit var episodeList: LinearLayout
     private val seriesTabBinds = ArrayList<(Boolean) -> Unit>()
     private var selectedSeries = 0
+    private var seriesExpanded = false
     private var libSection: Section? = null
     private var libIndex = 0
+    private var libScroller: ScrollView? = null
+    /** 已看过的 url，用来在分集列表里点一个圆点 */
+    private var historyUrls: Set<String> = emptySet()
     /** 预览播放器当前挂在哪个容器里 */
     private var previewHost: FrameLayout? = null
     private lateinit var previewSeries: TextView
@@ -409,8 +413,10 @@ class MainActivity : Activity() {
                     on -> Palette.ink
                     else -> Color.TRANSPARENT
                 },
-                dp(24).toFloat()
+                dp(999).toFloat()
             )
+            tv.scaleX = if (focused) 1.08f else 1f
+            tv.scaleY = if (focused) 1.08f else 1f
         }
     }
 
@@ -434,6 +440,8 @@ class MainActivity : Activity() {
 
     private fun switchTab(index: Int) {
         if (tab == index) return
+        // 换页时把输入法收掉，别让键盘盖着新页面
+        if (currentFocus is EditText) hideKeyboard()
         tab = index
         paintTabs()
         pageWatch.visibility = if (index == 0) View.VISIBLE else View.GONE
@@ -631,8 +639,8 @@ class MainActivity : Activity() {
         lp.bottomMargin = dp(2)
         row.layoutParams = lp
 
-        val thumbW = dp(if (compact) 76 else 92)
-        val thumbH = dp(if (compact) 43 else 52)
+        val thumbW = dp(if (compact) 84 else 124)
+        val thumbH = thumbW * 9 / 16
         val thumb = FrameLayout(this).apply {
             background = shape(Palette.cover(index), dp(8).toFloat())
             clipToOutline = true
@@ -653,11 +661,11 @@ class MainActivity : Activity() {
             setPadding(dp(12), 0, 0, 0)
         }
         val seriesName = seriesOf[v.url].orEmpty().ifBlank { "随心看" }
-        val seriesLabel = label(seriesName, if (compact) 12 else 15, Palette.ink2, display = true).apply {
+        val seriesLabel = label(seriesName, if (compact) 12 else 17, Palette.ink, display = true).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }
-        val episodeLabel = label(v.title, if (compact) 10 else 12, Palette.ink3).apply {
+        val episodeLabel = label(v.title, if (compact) 10 else 14, Palette.ink2).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             setPadding(0, dp(3), 0, 0)
@@ -716,15 +724,16 @@ class MainActivity : Activity() {
         val items = History.load(this)
         if (items.isEmpty()) return
         watchList.addView(
-            label("最近看过", if (compact) 12 else 15, Palette.ink2, display = true).apply {
-                setPadding(dp(8), dp(2), 0, dp(6))
+            label("继续看", if (compact) 13 else 18, Palette.ink, display = true).apply {
+                setPadding(dp(8), dp(2), 0, dp(8))
             }
         )
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             clipChildren = false
         }
-        items.take(12).forEach { h -> row.addView(recentCard(h)) }
+        // 只放最近 6 个：再多就要横滑找，反而不如直接往下翻列表
+        items.take(6).forEach { h -> row.addView(recentCard(h)) }
         val strip = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             clipToPadding = false
@@ -733,12 +742,12 @@ class MainActivity : Activity() {
         }
         watchList.addView(
             strip,
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(12) }
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(18) }
         )
     }
 
     private fun recentCard(h: HistoryItem): View {
-        val w = dp(if (compact) 132 else 176)
+        val w = dp(if (compact) 150 else 230)
         val hgt = w * 9 / 16
         val card = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(w, hgt).apply { rightMargin = dp(10) }
@@ -892,19 +901,13 @@ class MainActivity : Activity() {
         page.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         // 二级 tab：一个系列一个胶囊，焦点一到就切换
+        // 系列胶囊按行排布：一屏看得到十几个，不用横着滑半天找
         seriesStripHost = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, dp(10))
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(2), 0, dp(8))
             clipChildren = false
         }
-        val strip = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            clipToPadding = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-            addView(seriesStripHost, WRAP_CONTENT, WRAP_CONTENT)
-        }
-        page.addView(strip, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        page.addView(seriesStripHost, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         val body = LinearLayout(this).apply {
             orientation = if (compact) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
@@ -922,6 +925,16 @@ class MainActivity : Activity() {
             setPadding(0, 0, dp(if (compact) 4 else 12), dp(16))
         }
         scroller.addView(episodeList, MATCH_PARENT, WRAP_CONTENT)
+        libScroller = scroller
+        scroller.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+            val sec = libSection ?: return@setOnScrollChangeListener
+            val shown = sec.videos
+            if (episodeList.childCount >= shown.size) return@setOnScrollChangeListener
+            val child = episodeList.getChildAt(episodeList.childCount - 1) ?: return@setOnScrollChangeListener
+            if (child.bottom - scrollY < scroller.height + dp(200)) {
+                appendEpisodes(sec, episodeList.childCount)
+            }
+        }
         allHost = episodeList
 
         val right = LinearLayout(this).apply {
@@ -1176,9 +1189,57 @@ class MainActivity : Activity() {
         }
 
         if (selectedSeries >= shown.size) selectedSeries = 0
-        shown.forEachIndexed { i, sec -> seriesStripHost.addView(seriesTab(sec, i, shown)) }
+        fillSeriesTabs(shown)
         paintSeriesTabs()
         renderEpisodes(shown, shown[selectedSeries])
+    }
+
+    /** 系列胶囊按行铺；默认两行，点「全部 N 个系列」展开 */
+    private fun fillSeriesTabs(shown: List<Section>) {
+        seriesStripHost.removeAllViews()
+        seriesTabBinds.clear()
+
+        val perRow = if (compact) 3 else 6
+        val twoRows = perRow * 2
+        val limit = if (seriesExpanded || shown.size <= twoRows) shown.size else twoRows
+
+        var index = 0
+        while (index < limit) {
+            val rowView = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                clipChildren = false
+                setPadding(0, 0, 0, dp(6))
+            }
+            val end = (index + perRow).coerceAtMost(limit)
+            for (i in index until end) {
+                rowView.addView(seriesTab(shown[i], i, shown))
+            }
+            seriesStripHost.addView(rowView, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            index = end
+        }
+
+        if (shown.size > twoRows) {
+            val more = label(
+                if (seriesExpanded) "收起" else "全部 ${shown.size} 个系列 ▽",
+                if (compact) 11 else 14, Palette.ink3
+            ).apply {
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+                isFocusable = true
+                isClickable = true
+                noDefaultFocusRing()
+                setOnClickListener {
+                    seriesExpanded = !seriesExpanded
+                    fillSeriesTabs(shown)
+                    paintSeriesTabs()
+                }
+                setOnFocusChangeListener { v, has ->
+                    (v as TextView).setTextColor(if (has) Palette.ink else Palette.ink3)
+                }
+            }
+            seriesStripHost.addView(more, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+                bottomMargin = dp(4)
+            })
+        }
     }
 
     /** 二级 tab 胶囊 */
@@ -1191,7 +1252,9 @@ class MainActivity : Activity() {
             isFocusable = true
             isClickable = true
             noDefaultFocusRing()
-            setOnFocusChangeListener { _, has ->
+            setOnFocusChangeListener { v, has ->
+                v.scaleX = if (has) 1.06f else 1f
+                v.scaleY = if (has) 1.06f else 1f
                 if (!has) return@setOnFocusChangeListener
                 if (selectedSeries != index) {
                     selectedSeries = index
@@ -1233,7 +1296,8 @@ class MainActivity : Activity() {
         if (!same) {
             libIndex = 0
             episodeList.removeAllViews()
-            sec.videos.forEachIndexed { i, v -> episodeList.addView(libRow(sec, v, i)) }
+            // 一次只建 60 行：Little Fox 这种 400+ 集的系列，全建一遍要卡一两秒
+            appendEpisodes(sec, 0)
         }
         if (sec.videos.isNotEmpty()) showLibPreview(sec, libIndex.coerceIn(0, sec.videos.size - 1))
         // 只有「按 OK 选定这个系列」才把焦点送进分集列表；
@@ -1241,28 +1305,47 @@ class MainActivity : Activity() {
         if (grabFocus && tab == 1) episodeList.post { episodeList.getChildAt(0)?.requestFocus() }
     }
 
-    /** 视频目录里的分集行：序号 + 封面 + 集名 */
+    /** 往分集列表里再补一批（默认 60 行） */
+    private fun appendEpisodes(sec: Section, from: Int) {
+        val end = (from + 60).coerceAtMost(sec.videos.size)
+        for (i in from until end) {
+            episodeList.addView(libRow(sec, sec.videos[i], i))
+        }
+    }
+
+    /** 视频目录里的分集行：已看标记 + 封面 + 集名 */
     private fun libRow(sec: Section, v: Video, index: Int): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(6), dp(10), dp(6))
-            background = shape(Color.TRANSPARENT, dp(12).toFloat())
+            setPadding(dp(10), dp(if (compact) 6 else 8), dp(12), dp(if (compact) 6 else 8))
+            background = shape(Color.TRANSPARENT, dp(14).toFloat())
             isFocusable = true
             isClickable = true
             noDefaultFocusRing()
         }
         row.layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(2) }
 
-        val num = label(String.format("%02d", index + 1), if (compact) 11 else 13, Palette.ink3, display = true).apply {
-            gravity = Gravity.CENTER
-            setPadding(0, 0, dp(10), 0)
-            minWidth = dp(if (compact) 26 else 34)
+        // 左边的珊瑚竖条：焦点在哪一行，远看也一眼能认出来
+        val bar = View(this).apply {
+            background = shape(Palette.coral, dp(3).toFloat())
+            visibility = View.INVISIBLE
         }
-        row.addView(num)
+        row.addView(bar, dp(4), dp(if (compact) 26 else 40))
 
-        val thumbW = dp(if (compact) 76 else 92)
-        val thumbH = dp(if (compact) 43 else 52)
+        // 已看 / 未看：比原来的 01/02 序号有用得多
+        val watched = historyUrls.contains(v.url)
+        val dotSize = dp(if (compact) 7 else 9)
+        val mark = View(this).apply {
+            background = if (watched) shape(Palette.coral, dp(99).toFloat())
+            else shape(Color.TRANSPARENT, dp(99).toFloat(), dp(1), Palette.ink3)
+        }
+        row.addView(mark, LinearLayout.LayoutParams(dotSize, dotSize).apply {
+            leftMargin = dp(10); rightMargin = dp(if (compact) 8 else 12)
+        })
+
+        val thumbW = dp(if (compact) 84 else 108)
+        val thumbH = thumbW * 9 / 16
         val thumb = FrameLayout(this).apply {
             background = shape(Palette.cover(index), dp(8).toFloat())
             clipToOutline = true
@@ -1272,31 +1355,42 @@ class MainActivity : Activity() {
         bindCover(img, v.thumb, coverUrlFor[sec.title], thumbW, thumbH)
         row.addView(thumb, thumbW, thumbH)
 
-        val title = label(v.title, if (compact) 12 else 14, Palette.ink2).apply {
+        val title = label(v.title, if (compact) 13 else 18, Palette.ink2).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(12), 0, 0, 0)
+            setPadding(dp(if (compact) 12 else 16), 0, 0, 0)
         }
         row.addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        val dotSize = dp(if (compact) 24 else 30)
-        val playDot = label("▶", if (compact) 10 else 12, Palette.card, display = true).apply {
+        val dot = dp(if (compact) 24 else 32)
+        val playDot = label("▶", if (compact) 10 else 13, Palette.onAccent, display = true).apply {
             gravity = Gravity.CENTER
             background = shape(Palette.coral, dp(999).toFloat())
             visibility = View.GONE
         }
-        row.addView(playDot, LinearLayout.LayoutParams(dotSize, dotSize))
+        row.addView(playDot, LinearLayout.LayoutParams(dot, dot))
 
         row.setOnFocusChangeListener { _, has ->
             row.background = shape(
                 if (has) Palette.card else Color.TRANSPARENT,
-                dp(12).toFloat(),
-                if (has) dp(2) else 0,
-                Palette.ink
+                dp(14).toFloat(),
+                if (has) dp(1) else 0,
+                if (has) Palette.ink else Color.TRANSPARENT
             )
+            row.scaleX = if (has) 1.02f else 1f
+            row.scaleY = if (has) 1.02f else 1f
+            row.pivotX = 0f
             title.setTextColor(if (has) Palette.ink else Palette.ink2)
+            bar.visibility = if (has) View.VISIBLE else View.INVISIBLE
             playDot.visibility = if (has) View.VISIBLE else View.GONE
-            if (has) showLibPreview(sec, index)
+            if (has) {
+                showLibPreview(sec, index)
+                // 让焦点行停在大约屏幕 1/3 处，连按不会贴着上下边
+                libScroller?.let { sc ->
+                    val y = row.top - (sc.height / 3)
+                    sc.smoothScrollTo(0, y.coerceAtLeast(0))
+                }
+            }
         }
         row.setOnClickListener { playList(sec.videos, index) }
         return row
@@ -1345,7 +1439,11 @@ class MainActivity : Activity() {
                 return
             }
             Thumbs.load(coverUrl, cfg.user, cfg.pass, w, h) { bmp ->
-                if (bmp != null) img.setImageBitmap(bmp)
+                if (bmp != null) {
+                    img.alpha = 0f
+                    img.setImageBitmap(bmp)
+                    img.animate().alpha(1f).setDuration(180).start()
+                }
             }
             return
         }
@@ -1356,7 +1454,11 @@ class MainActivity : Activity() {
             return
         }
         Frames.load(frameUrl, cfg.user, cfg.pass, w, h) { bmp ->
-            if (bmp != null) img.setImageBitmap(bmp)
+            if (bmp != null) {
+                img.alpha = 0f
+                img.setImageBitmap(bmp)
+                img.animate().alpha(1f).setDuration(180).start()
+            }
         }
     }
 
@@ -1587,6 +1689,7 @@ class MainActivity : Activity() {
         sections = list
 
         seriesOf = list.flatMap { sec -> sec.videos.map { it.url to sec.title } }.toMap()
+        historyUrls = History.load(this).map { it.url }.toSet()
         coverUrlFor = list.mapNotNull { sec ->
             sec.videos.firstOrNull()?.let { sec.title to it.url }
         }.toMap()
