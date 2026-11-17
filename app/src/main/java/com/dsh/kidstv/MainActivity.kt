@@ -324,19 +324,15 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(if (compact) 8 else 14))
         }
 
-        val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        // 名字比原来长一个字，窄屏会折行 —— 单行 + 省略
-        brand.addView(
-            label("夏夏爱学习", if (compact) 13 else 21, Palette.ink, display = true).apply {
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-            }
-        )
-        subtitle = label("", if (compact) 10 else 12, Palette.ink3).apply {
+        // 左上角不再放大标题，只留一行状态（N 个目录 · M 集 / 扫描进度）
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        subtitle = label("", if (compact) 11 else 13, Palette.ink3).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }
-        subtitle.setPadding(0, dp(2), 0, 0)
         brand.addView(subtitle)
         row.addView(brand, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
