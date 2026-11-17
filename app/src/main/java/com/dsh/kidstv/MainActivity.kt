@@ -309,27 +309,24 @@ class MainActivity : Activity() {
     }
 
     private fun header(): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        // 状态一行、四个 tab 居中一行（都放在屏幕中间，不再挤右上角）
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, 0, 0, dp(if (compact) 8 else 14))
         }
 
-        // 左上角不再放大标题，只留一行状态（N 个目录 · M 集 / 扫描进度）
-        val brand = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
         subtitle = label("", if (compact) 11 else 13, Palette.ink3).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
         }
-        brand.addView(subtitle)
-        row.addView(brand, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        col.addView(subtitle, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
 
         val tabs = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(if (compact) 6 else 10), 0, 0)
         }
         tabWatch = tabPill("随心看", 0)
         tabAll = tabPill("视频目录", 1)
@@ -337,39 +334,40 @@ class MainActivity : Activity() {
         tabs.addView(tabWatch)
         tabs.addView(tabAll)
         tabs.addView(tabBooks)
-        row.addView(tabs)
 
-        val parent = label("家长", if (compact) 11 else 13, Palette.ink2).apply {
-            setPadding(
-                dp(if (compact) 12 else 18), dp(if (compact) 7 else 9),
-                dp(if (compact) 12 else 18), dp(if (compact) 7 else 9)
-            )
-            background = shape(Palette.card, dp(30).toFloat(), dp(1), Palette.paper2)
+        // 「家长」和其他 tab 排在同一行、同一套尺寸
+        val parent = label("家长", tabTextSize(), Palette.ink2, display = true).apply {
+            setPadding(tabPadH(), tabPadV(), tabPadH(), tabPadV())
+            background = shape(Palette.card, dp(999).toFloat(), dp(1), Palette.paper2)
             isFocusable = true
             isClickable = true
             noDefaultFocusRing()
             setOnClickListener { askPin() }
-            // 遥控器焦点必须有反馈，不然孩子根本看不出焦点停在「家长」上
             setOnFocusChangeListener { v, has ->
                 v.background = shape(
                     if (has) Palette.ink else Palette.card,
-                    dp(30).toFloat(), dp(1), if (has) Palette.ink else Palette.paper2
+                    dp(999).toFloat(), dp(1), if (has) Palette.ink else Palette.paper2
                 )
                 (v as TextView).setTextColor(if (has) Palette.paper else Palette.ink2)
+                v.scaleX = if (has) 1.06f else 1f
+                v.scaleY = if (has) 1.06f else 1f
             }
         }
-        val lp = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
-        lp.leftMargin = dp(if (compact) 8 else 18)
-        row.addView(parent, lp)
-        return row
+        tabs.addView(parent, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+            leftMargin = dp(if (compact) 6 else 10)
+        })
+
+        col.addView(tabs, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        return col
     }
 
+    private fun tabTextSize(): Float = if (compact) 15f else 22f
+    private fun tabPadH(): Int = dp(if (compact) 14 else 26)
+    private fun tabPadV(): Int = dp(if (compact) 7 else 11)
+
     private fun tabPill(text: String, index: Int): TextView {
-        val tv = label(text, if (compact) 11 else 17, Palette.ink2, display = true).apply {
-            setPadding(
-                dp(if (compact) 9 else 20), dp(if (compact) 6 else 9),
-                dp(if (compact) 9 else 20), dp(if (compact) 6 else 9)
-            )
+        val tv = label(text, tabTextSize(), Palette.ink2, display = true).apply {
+            setPadding(tabPadH(), tabPadV(), tabPadH(), tabPadV())
             background = shape(Color.TRANSPARENT, dp(24).toFloat())
             isFocusable = true
             isClickable = true
@@ -404,7 +402,7 @@ class MainActivity : Activity() {
             }
         }
         val lp = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
-        lp.rightMargin = dp(6)
+        lp.rightMargin = dp(if (compact) 6 else 10)
         tv.layoutParams = lp
         return tv
     }
@@ -1554,6 +1552,7 @@ class MainActivity : Activity() {
                 stopScanTicker()
                 hideSplash()
                 // 以前出错只改了列表区，顶部还挂着「扫描中…」，看着就像卡死
+                subtitle.visibility = View.VISIBLE
                 subtitle.text = "连不上 NAS"
                 if (sections.isEmpty() || showingDemo) {
                     val why = e.message?.takeIf { it.isNotBlank() } ?: "连接超时"
@@ -1576,7 +1575,9 @@ class MainActivity : Activity() {
         }.toMap()
         videoByUrl = list.flatMap { it.videos }.associateBy { it.url }
         val flat = list.flatMap { it.videos }
-        subtitle.text = "${list.size} 个目录 · ${flat.size} 集"
+        // 状态行平时不显示：只在扫描中 / 出错时出现
+        subtitle.text = ""
+        subtitle.visibility = View.GONE
         // 随机顺序按"本地日期"固定：同一天怎么刷新都一样，孩子能找到刚看的那集；
         // 跨天自动换一批。素材变了列表自然会变。
         renderWatch(flat.shuffled(dayRandom()).take(if (compact) 30 else 40))
@@ -1595,7 +1596,8 @@ class MainActivity : Activity() {
         showingDemo = true
         runCatching {
             renderData(listOf(Demo.section(this)))
-            subtitle.text = if (compact) "演示模式 · 右上角「家长」配置" else "演示模式 · 点右上角「家长」填 NAS 地址"
+            subtitle.text = ""
+            subtitle.visibility = View.GONE
         }.onFailure {
             showEmpty("还没有接入 NAS", "点右上角「家长」，用手机填一下 NAS 地址")
         }
@@ -1617,6 +1619,7 @@ class MainActivity : Activity() {
         stopScanTicker()
         scanStep = "连接 NAS"
         scanStartAt = System.currentTimeMillis()
+        subtitle.visibility = View.VISIBLE
         subtitle.text = scanText()
         val tick = object : Runnable {
             override fun run() {
