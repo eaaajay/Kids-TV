@@ -85,6 +85,7 @@ object Library {
         val visited = HashSet<String>()
         var budget = MAX_REQUESTS
         var reused = 0
+        var fallbacks = 0
 
         while (queue.isNotEmpty() && budget > 0 && sections.size < MAX_SECTIONS) {
             val (dir, depth) = queue.removeFirst()
@@ -103,11 +104,21 @@ object Library {
                 reused++
             } else {
                 onStep(cleanTitle(dir.name))
-                val kids = fetchChildren(dav, dir.href) ?: continue
-                val list = kids.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
-                vids = list.map { toVideo(dav, it, artMap(kids), subMap(kids)) }
-                subdirs = kids.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(natural)
-                newIndex[dir.href] = CachedDir(dir.lastModified, vids, subdirs)
+                val kids = fetchChildren(dav, dir.href)
+                if (kids == null) {
+                    // 中继抖一下不能把整个系列从库里抹掉：有旧缓存就继续用，
+                    // 并把旧索引原样保留，等下次网络恢复再更新。
+                    if (cached == null) continue
+                    vids = cached.videos
+                    subdirs = cached.subdirs
+                    newIndex[dir.href] = cached
+                    fallbacks++
+                } else {
+                    val list = kids.filter { !it.isDir && isVideo(it.name) }.sortedWith(natural)
+                    vids = list.map { toVideo(dav, it, artMap(kids), subMap(kids)) }
+                    subdirs = kids.filter { it.isDir && !it.name.startsWith(".") }.sortedWith(natural)
+                    newIndex[dir.href] = CachedDir(dir.lastModified, vids, subdirs)
+                }
             }
 
             if (vids.isNotEmpty()) {
@@ -120,7 +131,9 @@ object Library {
         }
 
         if (ctx != null) saveIndex(ctx, cfg, newIndex)
-        if (reused > 0) android.util.Log.d("Library", "增量扫描：复用 $reused 个目录")
+        if (reused > 0 || fallbacks > 0) {
+            android.util.Log.d("Library", "增量扫描：复用 $reused 个目录，失败回退 $fallbacks 个目录")
+        }
         return sections
     }
 

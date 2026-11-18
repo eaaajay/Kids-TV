@@ -124,6 +124,9 @@ class MainActivity : Activity() {
     private var videoByUrl: Map<String, Video> = emptyMap()
     private var previewPlayer: ExoPlayer? = null
     private var previewView: PlayerView? = null
+    /** 预览起不来时盖在上面的封面和提示；和 PlayerView 一起随 tab 挪容器 */
+    private var previewFallback: FrameLayout? = null
+    private var previewFallbackImage: ImageView? = null
     private var previewJob: Job? = null
     private var currentPreview: String? = null
     /**
@@ -830,6 +833,8 @@ class MainActivity : Activity() {
     /** 焦点落到哪一行，右边就播哪一集（静音、循环、260ms 防抖） */
     private fun showPreview(v: Video, force: Boolean = false) {
         previewUrl = v.url
+        // 新的一集先撤掉上一次的失败提示；起播成功后也会再确认一次
+        previewFallback?.visibility = View.GONE
         // 只有「随心看」那套标签需要跟着变；视频目录有自己的标题行
         if (previewHost == previewBox || previewHost == null) {
             previewSeries.text = seriesOf[v.url].orEmpty().ifBlank { "随心看" }
@@ -861,6 +866,7 @@ class MainActivity : Activity() {
                 host.addView(pv, MATCH_PARENT, MATCH_PARENT)
                 pv.player = player
             }
+            attachPreviewFallback(host)
             return player
         }
         val http = DefaultHttpDataSource.Factory()
@@ -880,11 +886,16 @@ class MainActivity : Activity() {
         p.repeatMode = Player.REPEAT_MODE_ONE
         p.playWhenReady = true
         p.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY) previewFallback?.visibility = View.GONE
+            }
+
             override fun onPlayerError(error: PlaybackException) {
-                // 预览只是锦上添花：解不了码就让这一格空着，别影响列表和播放
+                // 预览只是锦上添花：起不来就给封面和提示，别留一块黑
                 android.util.Log.w("Preview", "预览失败：${error.errorCodeName}", error)
                 currentPreview = null
                 runCatching { p.stop() }
+                showPreviewFallback()
             }
         })
 
@@ -902,7 +913,61 @@ class MainActivity : Activity() {
         host.addView(pv, MATCH_PARENT, MATCH_PARENT)
         previewHost = host
         previewPlayer = p
+        attachPreviewFallback(host)
         return p
+    }
+
+    /** 失败提示跟播放器放在同一个容器里，切 tab 时一起挪 */
+    private fun attachPreviewFallback(host: FrameLayout) {
+        val fallback = previewFallback ?: run {
+            val image = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+            previewFallbackImage = image
+            FrameLayout(this).apply {
+                visibility = View.GONE
+                isClickable = true
+                setOnClickListener {
+                    if (previewHost == libPreviewBox) {
+                        libSection?.let { sec -> playList(sec.videos, libIndex) }
+                    } else {
+                        playFromPreview()
+                    }
+                }
+                addView(image, MATCH_PARENT, MATCH_PARENT)
+                addView(
+                    label("预览不可用 · 按 OK 播放", if (compact) 11 else 13, Palette.ink).apply {
+                        gravity = Gravity.CENTER
+                        setPadding(dp(12), dp(8), dp(12), dp(8))
+                        background = shape(0xCC000000.toInt(), 0f)
+                    },
+                    FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM)
+                )
+            }.also { previewFallback = it }
+        }
+        if (fallback.parent !== host) {
+            (fallback.parent as? ViewGroup)?.removeView(fallback)
+            host.addView(fallback, MATCH_PARENT, MATCH_PARENT)
+        }
+    }
+
+    private fun showPreviewFallback() {
+        val image = previewFallbackImage ?: return
+        val v = videoByUrl[previewUrl]
+        image.setImageBitmap(null)
+        image.setBackgroundColor(Palette.cover(v?.title?.hashCode() ?: 0))
+        // 预览已经起不来了，只加载现成封面，不再额外从视频抽帧
+        v?.thumb?.let { url ->
+            val cached = Thumbs.cached(url)
+            if (cached != null) {
+                image.setImageBitmap(cached)
+            } else {
+                val w = previewBox.width.takeIf { it > 0 } ?: dp(320)
+                val h = previewBox.height.takeIf { it > 0 } ?: dp(180)
+                Thumbs.load(url, cfg.user, cfg.pass, w, h) { bmp ->
+                    if (bmp != null) image.setImageBitmap(bmp)
+                }
+            }
+        }
+        previewFallback?.visibility = View.VISIBLE
     }
 
     private fun authHeaders(): Map<String, String> {
