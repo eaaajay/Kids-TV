@@ -95,6 +95,8 @@ class MainActivity : Activity() {
     private var seriesExpanded = false
     private var libSection: Section? = null
     private var libIndex = 0
+    /** 分集行的选中态重绘；触摸和遥控器共用 */
+    private val libRowBinds = ArrayList<(Boolean) -> Unit>()
     private var libScroller: ScrollView? = null
     /** 已看过的 url，用来在分集列表里点一个圆点 */
     private var historyUrls: Set<String> = emptySet()
@@ -176,7 +178,17 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         hideSystemUi()
-        if (tab == 0 && currentPreview != null) previewPlayer?.play()
+        // 两个视频页返回前台都要恢复预览；以前只处理 tab 0，
+        // 从全屏播放返回视频目录时会停在暂停帧。
+        val preview = currentPreview
+        if ((tab == 0 || tab == 1) && preview != null) {
+            if (previewPlayer?.currentMediaItem == null) {
+                // onPause 可能刚好取消了尚未执行的延迟起播，重新设一次片源
+                videoByUrl[preview]?.let { showPreview(it, force = true) }
+            } else {
+                previewPlayer?.play()
+            }
+        }
         // 整份配置比对，不能只比 cacheKey（scheme+host+port+path）：
         // 只改账号或密码时地址没变，旧代码会一直拿旧密码去请求，只有杀进程才生效。
         val now = Prefs.load(this)
@@ -205,6 +217,8 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        // 连延迟起播也一起取消，否则退到播放页后，260ms 前的预览任务还会在后台开流
+        previewJob?.cancel()
         previewPlayer?.pause()
         pageParent.onHide()
     }
@@ -459,8 +473,10 @@ class MainActivity : Activity() {
             previewPlayer?.pause()
         }
         if (index == 1) {
-            // 切回视频目录时把预览挪到这一页
+            // 切回视频目录时把预览挪到这一页；同一集会因 currentPreview 去重而不再 prepare，
+            // 所以这里要显式恢复 play，否则刚才 pause 后就一直停在暂停帧
             libSection?.let { sec -> showLibPreview(sec, libIndex) }
+            previewPlayer?.play()
         }
         if (index == 2) loadBooks()
         // 家长页只在可见时开配对服务
@@ -823,6 +839,15 @@ class MainActivity : Activity() {
         showPreview(shuffled[index], force = true)
     }
 
+    /** 点预览大画面：视频目录按当前系列起播，随心看按随机列表起播 */
+    private fun playCurrentPreview() {
+        if (previewHost == libPreviewBox) {
+            libSection?.let { sec -> playList(sec.videos, libIndex) }
+        } else {
+            playFromPreview()
+        }
+    }
+
     /** 点/聚焦「全屏播放」胶囊：从当前预览的这一集开始播 */
     private fun playFromPreview() {
         val url = previewUrl ?: return
@@ -907,7 +932,7 @@ class MainActivity : Activity() {
             player = p
             // 预览层盖在 previewBox 上面，点击得挂它自己，否则父布局收不到
             isClickable = true
-            setOnClickListener { playFromPreview() }
+            setOnClickListener { playCurrentPreview() }
         }
         previewView = pv
         host.addView(pv, MATCH_PARENT, MATCH_PARENT)
@@ -925,13 +950,7 @@ class MainActivity : Activity() {
             FrameLayout(this).apply {
                 visibility = View.GONE
                 isClickable = true
-                setOnClickListener {
-                    if (previewHost == libPreviewBox) {
-                        libSection?.let { sec -> playList(sec.videos, libIndex) }
-                    } else {
-                        playFromPreview()
-                    }
-                }
+                setOnClickListener { playCurrentPreview() }
                 addView(image, MATCH_PARENT, MATCH_PARENT)
                 addView(
                     label("预览不可用 · 按 OK 播放", if (compact) 11 else 13, Palette.ink).apply {
@@ -1397,6 +1416,7 @@ class MainActivity : Activity() {
         libSection = sec
         if (!same) {
             libIndex = 0
+            libRowBinds.clear()
             episodeList.removeAllViews()
             // 一次只建 60 行：Little Fox 这种 400+ 集的系列，全建一遍要卡一两秒
             appendEpisodes(sec, 0)
@@ -1472,29 +1492,45 @@ class MainActivity : Activity() {
         }
         row.addView(playDot, LinearLayout.LayoutParams(dot, dot))
 
-        row.setOnFocusChangeListener { _, has ->
+        fun bind(on: Boolean) {
             row.background = shape(
-                if (has) Palette.card else Color.TRANSPARENT,
+                if (on) Palette.card else Color.TRANSPARENT,
                 dp(14).toFloat(),
-                if (has) dp(1) else 0,
-                if (has) Palette.ink else Color.TRANSPARENT
+                if (on) dp(1) else 0,
+                if (on) Palette.ink else Color.TRANSPARENT
             )
-            row.scaleX = if (has) 1.02f else 1f
-            row.scaleY = if (has) 1.02f else 1f
+            row.scaleX = if (on) 1.02f else 1f
+            row.scaleY = if (on) 1.02f else 1f
             row.pivotX = 0f
-            title.setTextColor(if (has) Palette.ink else Palette.ink2)
-            bar.visibility = if (has) View.VISIBLE else View.INVISIBLE
-            playDot.visibility = if (has) View.VISIBLE else View.GONE
+            title.setTextColor(if (on) Palette.ink else Palette.ink2)
+            bar.visibility = if (on) View.VISIBLE else View.INVISIBLE
+            playDot.visibility = if (on) View.VISIBLE else View.GONE
+        }
+        libRowBinds.add(::bind)
+        bind(false)
+
+        row.setOnFocusChangeListener { _, has ->
             if (has) {
+                libRowBinds.forEachIndexed { i, bind -> bind(i == index) }
                 showLibPreview(sec, index)
                 // 让焦点行停在大约屏幕 1/3 处，连按不会贴着上下边
                 libScroller?.let { sc ->
                     val y = row.top - (sc.height / 3)
                     sc.smoothScrollTo(0, y.coerceAtLeast(0))
                 }
+            } else {
+                bind(false)
             }
         }
-        row.setOnClickListener { playList(sec.videos, index) }
+        // 和「随心看」一致：手机上点行只选中并预览，播放交给右侧大画面/「看正片」
+        row.setOnClickListener {
+            if (row.isInTouchMode) {
+                libRowBinds.forEachIndexed { i, bind -> bind(i == index) }
+                showLibPreview(sec, index)
+            } else {
+                playList(sec.videos, index)
+            }
+        }
         return row
     }
 

@@ -50,6 +50,10 @@ class PlayerActivity : Activity() {
     private lateinit var playerView: PlayerView
     private lateinit var spinner: ProgressBar
     private lateinit var pauseIcon: FrameLayout
+    private lateinit var errorView: TextView
+    private var playbackFailed = false
+    private var failedItem = 0
+    private var failedPosition = 0L
 
     /** 底部横幅：标题 + 缓存进度 + 下载速度 + 倍速，3 秒后自动收起 */
     private lateinit var banner: LinearLayout
@@ -174,6 +178,14 @@ class PlayerActivity : Activity() {
         pauseIcon.addView(bars, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER))
         root.addView(pauseIcon, FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER))
 
+        errorView = label("", 18, 0xFFFFF7ED.toInt(), display = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(18), dp(28), dp(18))
+            background = shape(0xCC000000.toInt(), dp(16).toFloat())
+            visibility = View.GONE
+        }
+        root.addView(errorView, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER))
+
         root.addView(
             buildBanner(),
             FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM).apply {
@@ -216,7 +228,11 @@ class PlayerActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(dp(14), dp(4), dp(14), dp(4))
             isClickable = true
-            setOnClickListener { if (player?.playWhenReady == false) resumeFromBar() else pauseToControlBar() }
+            setOnClickListener {
+                if (playbackFailed) retryPlayback()
+                else if (player?.playWhenReady == false) resumeFromBar()
+                else pauseToControlBar()
+            }
         }
         row.addView(playBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(10) })
 
@@ -322,8 +338,8 @@ class PlayerActivity : Activity() {
     private fun paintSpeedMenu() {
         speedMenuRows.forEachIndexed { i, row ->
             val on = i == menuSel
-            row.setTextColor(if (on) Palette.ink else 0xCCFFF7ED.toInt())
-            row.background = shape(if (on) Palette.paper else 0x00000000, dp(12).toFloat())
+            row.setTextColor(if (on) Palette.onAccent else 0xCCFFF7ED.toInt())
+            row.background = shape(if (on) Palette.coral else 0x00000000, dp(12).toFloat())
         }
     }
 
@@ -479,6 +495,7 @@ class PlayerActivity : Activity() {
         )
         exo.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY) clearPlaybackError()
                 spinner.visibility = if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
                 if (state == Player.STATE_ENDED) {
                     if (exo.hasNextMediaItem()) {
@@ -495,6 +512,7 @@ class PlayerActivity : Activity() {
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                clearPlaybackError()
                 rememberCurrent()
                 showBanner()
                 updateStats()
@@ -511,7 +529,15 @@ class PlayerActivity : Activity() {
 
             override fun onPlayerError(error: PlaybackException) {
                 spinner.visibility = View.GONE
-                toast("播放失败：${error.errorCodeName}，可能格式不支持")
+                failedItem = exo.currentMediaItemIndex
+                failedPosition = exo.currentPosition
+                playbackFailed = true
+                errorView.text = "播放失败：${error.errorCodeName}\n按 OK 重试"
+                errorView.visibility = View.VISIBLE
+                // 焦点停在「重试」上，按一次 OK 就能重新拉流
+                focusOn = 0
+                paintBannerButtons()
+                showBanner()
             }
         })
 
@@ -557,7 +583,30 @@ class PlayerActivity : Activity() {
         History.record(this, url, titles.getOrNull(i) ?: "", seriesNames.getOrNull(i) ?: "")
     }
 
+    private fun retryPlayback() {
+        val p = player ?: return
+        playbackFailed = false
+        errorView.visibility = View.GONE
+        focusOn = -1
+        p.seekTo(failedItem, failedPosition)
+        p.prepare()
+        p.playWhenReady = true
+        paintBannerButtons()
+        showBanner()
+    }
+
+    private fun clearPlaybackError() {
+        if (!playbackFailed && errorView.visibility != View.VISIBLE) return
+        playbackFailed = false
+        errorView.visibility = View.GONE
+        paintBannerButtons()
+    }
+
     private fun togglePlay() {
+        if (playbackFailed) {
+            retryPlayback()
+            return
+        }
         val p = player ?: return
         if (p.playWhenReady) p.pause() else p.play()
         updatePauseIcon()
@@ -583,13 +632,17 @@ class PlayerActivity : Activity() {
 
     private fun paintBannerButtons() {
         val paused = player?.playWhenReady == false
-        playBtn.text = if (paused) "▶ 继续" else "⏸"
+        playBtn.text = when {
+            playbackFailed -> "重试"
+            paused -> "▶ 继续"
+            else -> "⏸"
+        }
         speedBtn.text = "速度 ${speedLabels[speedIndex]}×"
         subsBtn.text = if (subsOn) "字幕 开" else "字幕 关"
         listOf(playBtn, speedBtn, subsBtn).forEachIndexed { i, b ->
             val on = focusOn == i
-            b.setTextColor(if (on) Palette.ink else 0xCCFFF7ED.toInt())
-            b.background = shape(if (on) Palette.paper else 0x22FFFFFF, dp(999).toFloat())
+            b.setTextColor(if (on) Palette.onAccent else 0xCCFFF7ED.toInt())
+            b.background = shape(if (on) Palette.coral else 0x22FFFFFF, dp(999).toFloat())
         }
     }
 
@@ -732,7 +785,9 @@ class PlayerActivity : Activity() {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
             KeyEvent.KEYCODE_HEADSETHOOK -> {
                 if (event.repeatCount == 0) {
-                    if (playing) pauseToControlBar() else activateFocused()
+                    if (playbackFailed) retryPlayback()
+                    else if (playing) pauseToControlBar()
+                    else activateFocused()
                 }
                 return true
             }
