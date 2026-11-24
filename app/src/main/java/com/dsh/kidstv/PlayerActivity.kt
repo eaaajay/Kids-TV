@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
+import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -24,6 +25,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.VideoSize
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.ui.CaptionStyleCompat
@@ -49,6 +51,7 @@ class PlayerActivity : Activity() {
     private val subtitleUrls = ArrayList<String>()
     private lateinit var playerView: PlayerView
     private lateinit var spinner: ProgressBar
+    private lateinit var bufferTip: TextView
     private lateinit var pauseIcon: FrameLayout
     private lateinit var errorView: TextView
     private var playbackFailed = false
@@ -149,6 +152,8 @@ class PlayerActivity : Activity() {
         playerView = PlayerView(this).apply {
             useController = false
             setShutterBackgroundColor(Palette.bg)
+            // 换集/重新 prepare 时保留最后一帧，别立刻刷成黑屏
+            runCatching { setKeepContentOnPlayerReset(true) }
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             keepScreenOn = true
         }
@@ -160,6 +165,17 @@ class PlayerActivity : Activity() {
             visibility = View.GONE
         }
         root.addView(spinner, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER))
+
+        bufferTip = TextView(this).apply {
+            text = "缓冲中…"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setTextColor(0xCCFFF7ED.toInt())
+            visibility = View.GONE
+        }
+        root.addView(
+            bufferTip,
+            FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER).apply { topMargin = dp(96) }
+        )
 
         // 暂停图标：圆底两条竖杠，不依赖字体
         val bars = LinearLayout(this).apply {
@@ -486,6 +502,12 @@ class PlayerActivity : Activity() {
             .setLoadControl(loadControl)
             .build()
 
+        // 电视切刷新率（24p/50p/60p）时 HDMI 会重新同步，表现就是黑屏一两秒。
+        // 关掉它，宁可轻微 judder，也不要突然黑一下。
+        runCatching {
+            exo.setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF)
+        }
+
         exo.setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -496,7 +518,16 @@ class PlayerActivity : Activity() {
         exo.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) clearPlaybackError()
-                spinner.visibility = if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
+                val buffering = state == Player.STATE_BUFFERING
+                spinner.visibility = if (buffering) View.VISIBLE else View.GONE
+                bufferTip.visibility = if (buffering) View.VISIBLE else View.GONE
+                PlayerLog.add(this@PlayerActivity, "state=" + when (state) {
+                    Player.STATE_IDLE -> "IDLE"
+                    Player.STATE_BUFFERING -> "BUFFERING"
+                    Player.STATE_READY -> "READY"
+                    Player.STATE_ENDED -> "ENDED"
+                    else -> state.toString()
+                })
                 if (state == Player.STATE_ENDED) {
                     if (exo.hasNextMediaItem()) {
                         // 这一集放完了：位置归零，下次从头放
@@ -529,6 +560,8 @@ class PlayerActivity : Activity() {
 
             override fun onPlayerError(error: PlaybackException) {
                 spinner.visibility = View.GONE
+                bufferTip.visibility = View.GONE
+                PlayerLog.add(this@PlayerActivity, "播放错误 ${error.errorCodeName}: ${error.message?.take(120)}")
                 failedItem = exo.currentMediaItemIndex
                 failedPosition = exo.currentPosition
                 playbackFailed = true
@@ -538,6 +571,22 @@ class PlayerActivity : Activity() {
                 focusOn = 0
                 paintBannerButtons()
                 showBanner()
+            }
+
+            override fun onRenderedFirstFrame() {
+                PlayerLog.add(this@PlayerActivity, "首帧已渲染")
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                PlayerLog.add(
+                    this@PlayerActivity,
+                    "画面 ${videoSize.width}x${videoSize.height} " +
+                        "par=${"%.2f".format(videoSize.pixelWidthHeightRatio)}"
+                )
+            }
+
+            override fun onIsLoadingChanged(isLoading: Boolean) {
+                PlayerLog.add(this@PlayerActivity, "loading=$isLoading")
             }
         })
 
@@ -559,6 +608,7 @@ class PlayerActivity : Activity() {
         // 有观看记录就从上次的位置接着放（片头 <30s 就从头放）
         val resumeMs = History.positionFor(this, urls.getOrNull(startIndex).orEmpty())
             ?.positionMs?.let { if (it < 30_000L) 0L else it } ?: 0L
+        PlayerLog.add(this, "开始播放 ${urls.getOrNull(startIndex)?.substringAfterLast('/')} resume=${resumeMs}ms")
         exo.setMediaItems(items, startIndex, resumeMs)
         exo.playbackParameters = PlaybackParameters(speeds[speedIndex], 1f)
         // 有字幕就默认选上英文轨；没字幕时这段没有副作用

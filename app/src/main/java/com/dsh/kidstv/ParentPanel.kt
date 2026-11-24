@@ -36,6 +36,7 @@ class ParentPanel(
     private lateinit var urlView: TextView
     private lateinit var configView: TextView
     private lateinit var crashView: TextView
+    private lateinit var logView: TextView
     private val ui = Handler(Looper.getMainLooper())
     private val compact: Boolean get() = resources.configuration.screenWidthDp < 600
 
@@ -116,12 +117,19 @@ class ParentPanel(
         }
         box.addView(crashView)
 
+        // 播放日志：黑屏这类问题事后只能靠它还原现场
+        logView = ctx.label("", if (compact) 10 else 12, Palette.ink3).apply {
+            setPadding(0, dp(16), 0, 0)
+            visibility = View.GONE
+        }
+        box.addView(logView)
+
         box.addView(
             ctx.label(
                 "视频目录与绘本目录分别扫描；视频旁放同名 .jpg 可作封面。\n" +
                     "配好后切回上面的「随心看」或「视频目录」即可。",
                 if (compact) 12 else 14, Palette.ink3
-            ).apply { setPadding(0, dp(18), 0, 0) }
+            ).apply { setPadding(0, dp(14), 0, 0) }
         )
         return box
     }
@@ -133,6 +141,7 @@ class ParentPanel(
         delivered = null
         configView.text = describe(Prefs.load(ctx))
         refreshCrash()
+        refreshLog()
         startServer()
         ui.post(poller)
     }
@@ -153,6 +162,17 @@ class ParentPanel(
         } else {
             crashView.visibility = View.VISIBLE
             crashView.text = "上次闪退：\n$info"
+        }
+    }
+
+    /** 最近几条播放器状态（黑屏排查用） */
+    private fun refreshLog() {
+        val tail = PlayerLog.tail(ctx, 6)
+        if (tail.isBlank()) {
+            logView.visibility = View.GONE
+        } else {
+            logView.visibility = View.VISIBLE
+            logView.text = "播放日志：\n$tail"
         }
     }
 
