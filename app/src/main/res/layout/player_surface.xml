@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  主播放器用 SurfaceView（电视的硬件视频平面）。
+
+  实测：换 TextureView 后 30 次采样黑屏 5 次，SurfaceView 5 分钟 0 次 ——
+  这台电视的 GPU 合成扛不住 1080p，所以主画面还是交给视频平面，
+  偶发的「平面丢失」用渲染帧看门狗救回来。
+
+  VIDAA / 海思 / MStar 这类电视用「独立视频平面」显示视频：
+  SurfaceView 在换集、surface 重建、切后台再回来之后，偶尔会拿不回那个平面，
+
+-->
+<androidx.media3.ui.PlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:surface_type="surface_view"
+    app:use_controller="false"
+    app:resize_mode="fit" />

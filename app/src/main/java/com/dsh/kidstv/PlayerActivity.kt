@@ -4,12 +4,18 @@ import android.app.Activity
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.Uri
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.PowerManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
 import android.util.TypedValue
+import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -37,6 +43,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -109,6 +116,61 @@ class PlayerActivity : Activity() {
         }
     }
 
+    // ---- 画面卡死自愈 ----
+    private var lastWatchPos = -1L
+    private var lastWatchAt = 0L
+    private var stallRecovered = false
+
+    /**
+     * 保守的卡死检测：只看「播放位置」有没有前进。
+     *
+     * 不要用「多少毫秒没有新帧」来判断 —— 实测这台电视（MStar）
+     * 不会回调 onVideoFrameProcessingOffset，frameCount 永远是 0，
+     * 那样会每 6 秒误判一次，反而自己把画面重建黑掉。
+     *
+     * 只在「在播但位置连续 20 秒不动」时，重新挂一次 surface；
+     * 每集只救一次，避免反复抖动。
+     */
+    private val watchDog = object : Runnable {
+        override fun run() {
+            checkStall()
+            ui.postDelayed(this, 2000)
+        }
+    }
+
+    private fun logTick() {
+        val p = player ?: return
+        PlayerLog.add(
+            this,
+            "tick pos=${p.currentPosition} play=${p.playbackState}" +
+                " playing=${p.isPlaying} v=${p.videoSize.width}x${p.videoSize.height}" +
+                " surf=${if (playerView.videoSurfaceView?.isAttachedToWindow == true) "on" else "off"}"
+        )
+    }
+
+    private fun checkStall() {
+        logTick()
+        val p = player ?: return
+        if (!p.isPlaying) {
+            lastWatchPos = -1L
+            return
+        }
+        val pos = p.currentPosition
+        if (pos != lastWatchPos) {
+            lastWatchPos = pos
+            lastWatchAt = System.currentTimeMillis()
+            stallRecovered = false
+            return
+        }
+        if (System.currentTimeMillis() - lastWatchAt < 20_000L || stallRecovered) return
+
+        stallRecovered = true
+        PlayerLog.add(this, "位置 20 秒没动 pos=$pos，重新挂一次 surface")
+        val keep = p
+        playerView.player = null
+        playerView.post { runCatching { playerView.player = keep } }
+    }
+
     private fun recordProgress() {
         val p = player ?: return
         val url = urls.getOrNull(p.currentMediaItemIndex) ?: return
@@ -149,7 +211,8 @@ class PlayerActivity : Activity() {
     private fun buildUi(): View {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
 
-        playerView = PlayerView(this).apply {
+        playerView = layoutInflater.inflate(R.layout.player_surface, root, false) as PlayerView
+        playerView.apply {
             useController = false
             setShutterBackgroundColor(Palette.bg)
             // 换集/重新 prepare 时保留最后一帧，别立刻刷成黑屏
@@ -577,6 +640,10 @@ class PlayerActivity : Activity() {
                 PlayerLog.add(this@PlayerActivity, "首帧已渲染")
             }
 
+            override fun onSurfaceSizeChanged(width: Int, height: Int) {
+                PlayerLog.add(this@PlayerActivity, "surface ${width}x$height")
+            }
+
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 PlayerLog.add(
                     this@PlayerActivity,
@@ -619,6 +686,8 @@ class PlayerActivity : Activity() {
             .build()
         exo.prepare()
         exo.playWhenReady = true
+        ui.removeCallbacks(watchDog)
+        ui.postDelayed(watchDog, 2000)
         player = exo
         playerView.player = exo
     }
@@ -875,10 +944,48 @@ class PlayerActivity : Activity() {
         showBanner()
     }
 
+    /** 记录系统级的亮屏/息屏/屏保事件：用来区分「电视自己待机」和「App 画面丢了」 */
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val what = when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> "系统 SCREEN_OFF"
+                Intent.ACTION_SCREEN_ON -> "系统 SCREEN_ON"
+                Intent.ACTION_DREAMING_STARTED -> "屏保开始"
+                Intent.ACTION_DREAMING_STOPPED -> "屏保结束"
+                else -> intent.action ?: "?"
+            }
+            PlayerLog.add(this@PlayerActivity, "$what interactive=${pm.isInteractive}")
+        }
+    }
+
+    private fun registerScreen() {
+        val f = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_DREAMING_STARTED)
+            addAction(Intent.ACTION_DREAMING_STOPPED)
+        }
+        runCatching { registerReceiver(screenReceiver, f) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        registerScreen()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        runCatching { unregisterReceiver(screenReceiver) }
+        PlayerLog.add(this, "onStop")
+    }
+
     override fun onPause() {
         super.onPause()
+        PlayerLog.add(this, "onPause")
         recordProgress()
         History.flush(this)
+        ui.removeCallbacks(watchDog)
         resumeAfterPause = player?.playWhenReady == true
         player?.pause()
         showBanner()
@@ -886,6 +993,7 @@ class PlayerActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        PlayerLog.add(this, "onResume")
         if (resumeAfterPause) player?.play()
         resumeAfterPause = false
         showBanner()
